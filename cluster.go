@@ -63,8 +63,8 @@ type Cluster struct {
 	kubeconfig string
 	client     *kubernetes.Clientset
 
-	master *VM
-	nodes  []*VM
+	controller *VM
+	nodes      []*VM
 }
 
 func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
@@ -128,12 +128,12 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 
 	clusterID := <-incrClusterID
 
-	masterCfg := cfg.VMConfig.Copy()
-	masterCfg.Hostname = fmt.Sprintf("cluster%d-master", clusterID)
-	masterCfg.BootScript = bootscript.MustAsset("master.sh")
-	masterCfg.PortForwards[5000] = true
-	masterCfg.PortForwards[6443] = true
-	ret.master, err = u.NewVM(masterCfg)
+	controllerCfg := cfg.VMConfig.Copy()
+	controllerCfg.Hostname = fmt.Sprintf("cluster%d-controller", clusterID)
+	controllerCfg.BootScript = bootscript.MustAsset("controller.sh")
+	controllerCfg.PortForwards[5000] = true
+	controllerCfg.PortForwards[6443] = true
+	ret.controller, err = u.NewVM(controllerCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -154,11 +154,11 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 }
 
 func (c *Cluster) Start() error {
-	if err := copyFile(c.cfg.NetworkAddon, filepath.Join(c.master.Dir(), "addons.yaml")); err != nil {
+	if err := copyFile(c.cfg.NetworkAddon, filepath.Join(c.controller.Dir(), "addons.yaml")); err != nil {
 		return err
 	}
 
-	if err := c.master.Start(); err != nil {
+	if err := c.controller.Start(); err != nil {
 		return err
 	}
 	for _, node := range c.nodes {
@@ -170,7 +170,7 @@ func (c *Cluster) Start() error {
 }
 
 func (c *Cluster) WaitReady(ctx context.Context) error {
-	if err := c.master.WaitReady(ctx); err != nil {
+	if err := c.controller.WaitReady(ctx); err != nil {
 		return err
 	}
 	for _, node := range c.nodes {
@@ -232,7 +232,7 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 }
 
 func (c *Cluster) Kubeconfig() string {
-	return filepath.Join(c.master.Dir(), "kubeconfig")
+	return filepath.Join(c.controller.Dir(), "kubeconfig")
 }
 
 func nodeReady(node corev1.Node) bool {
