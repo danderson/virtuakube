@@ -1,4 +1,3 @@
-// Package virtuakube sets up virtual Kubernetes clusters for tests.
 package virtuakube
 
 import (
