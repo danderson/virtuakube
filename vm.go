@@ -69,8 +69,8 @@ type VM struct {
 	diskPath string
 	mac      string
 	forwards map[int]int
-	ipv4     net.IP
-	ipv6     net.IP
+	ipv4     string
+	ipv6     string
 	cmd      *exec.Cmd
 
 	closedMu sync.Mutex
@@ -219,8 +219,7 @@ func (v *VM) Dir() string {
 // Start boots the virtual machine. The universe is destroyed if the
 // VM ever shuts down.
 func (v *VM) Start() error {
-	ips := []string{v.ipv4.String(), v.ipv6.String()}
-	fmt.Println(ips)
+	ips := []string{v.ipv4, v.ipv6}
 	if err := ioutil.WriteFile(filepath.Join(v.Dir(), "ip"), []byte(strings.Join(ips, "\n")), 0644); err != nil {
 		return err
 	}

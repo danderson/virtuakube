@@ -161,7 +161,6 @@ func (c *Cluster) Start() error {
 	if err := c.master.Start(); err != nil {
 		return err
 	}
-	return nil
 	for _, node := range c.nodes {
 		if err := node.Start(); err != nil {
 			return err
@@ -174,12 +173,12 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 	if err := c.master.WaitReady(ctx); err != nil {
 		return err
 	}
-	return nil
 	for _, node := range c.nodes {
 		if err := node.WaitReady(ctx); err != nil {
 			return err
 		}
 	}
+	return nil
 
 	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
 	if err != nil {

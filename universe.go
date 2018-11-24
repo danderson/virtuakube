@@ -48,8 +48,8 @@ type Universe struct {
 	ctx      context.Context
 	shutdown context.CancelFunc
 	ports    chan int
-	ipv4s    chan net.IP
-	ipv6s    chan net.IP
+	ipv4s    chan string
+	ipv6s    chan string
 
 	swtch *exec.Cmd
 	sock  string
@@ -81,8 +81,8 @@ func New(ctx context.Context) (*Universe, error) {
 		ctx:      ctx,
 		shutdown: shutdown,
 		ports:    make(chan int),
-		ipv4s:    make(chan net.IP),
-		ipv6s:    make(chan net.IP),
+		ipv4s:    make(chan string),
+		ipv6s:    make(chan string),
 		swtch: exec.CommandContext(
 			ctx,
 			"vde_switch",
@@ -122,7 +122,7 @@ func New(ctx context.Context) (*Universe, error) {
 		ip := net.IPv4(192, 168, 50, 1).To4()
 		for {
 			select {
-			case ret.ipv4s <- ip:
+			case ret.ipv4s <- ip.String():
 				ip[3]++
 			case <-ctx.Done():
 				return
@@ -133,7 +133,7 @@ func New(ctx context.Context) (*Universe, error) {
 		ip := net.ParseIP("fd00::1")
 		for {
 			select {
-			case ret.ipv6s <- ip:
+			case ret.ipv6s <- ip.String():
 				ip[15]++
 			case <-ctx.Done():
 				return
