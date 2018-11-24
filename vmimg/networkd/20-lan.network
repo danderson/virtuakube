@@ -1,0 +1,6 @@
+[Match]
+
+[Network]
+LinkLocalAddressing=yes
+LLMNR=yes
+MulticastDNS=yes

@@ -1,0 +1,4 @@
+*.tar
+*.qcow2
+vmlinuz
+initrd.img
