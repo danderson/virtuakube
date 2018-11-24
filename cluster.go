@@ -34,7 +34,7 @@ type ClusterConfig struct {
 	// TODO: only supports 1 currently
 	NumNodes int
 	// The VMConfig to use when creating cluster VMs.
-	VMConfig
+	*VMConfig
 	// NetworkAddon is the Kubernetes network addon to install. Can be
 	// an absolute path to a manifest yaml, or one of the builtin
 	// addons "calico" or "weave".
@@ -42,6 +42,19 @@ type ClusterConfig struct {
 	// ExtraAddons is a list of Kubernetes manifest yamls to apply to
 	// the cluster, in addition to the network addon.
 	ExtraAddons []string
+}
+
+func (c *ClusterConfig) Copy() *ClusterConfig {
+	ret := &ClusterConfig{
+		NumNodes:     c.NumNodes,
+		VMConfig:     c.VMConfig.Copy(),
+		NetworkAddon: c.NetworkAddon,
+		ExtraAddons:  make([]string, 0, len(c.ExtraAddons)),
+	}
+	for _, addon := range c.ExtraAddons {
+		c.ExtraAddons = append(c.ExtraAddons, addon)
+	}
+	return ret
 }
 
 type Cluster struct {
@@ -54,43 +67,52 @@ type Cluster struct {
 	nodes  []*VM
 }
 
-func validateClusterConfig(cfg *ClusterConfig) error {
+func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
+	cfg = cfg.Copy()
+
 	if cfg.NumNodes != 1 {
-		return errors.New("clusters with >1 node not supported yet")
+		return nil, errors.New("clusters with >1 node not supported yet")
 	}
 
-	if err := validateVMConfig(&cfg.VMConfig); err != nil {
-		return err
+	if cfg.VMConfig == nil {
+		return nil, errors.New("missing VMConfig")
+	}
+
+	var err error
+	cfg.VMConfig, err = validateVMConfig(cfg.VMConfig)
+	if err != nil {
+		return nil, err
 	}
 
 	if cfg.NetworkAddon == "" {
-		return errors.New("must specify network addon")
+		return nil, errors.New("must specify network addon")
 	}
 	nap, err := filepath.Abs(cfg.NetworkAddon)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := os.Stat(nap); err != nil {
-		return err
+		return nil, err
 	}
 	cfg.NetworkAddon = nap
 
 	for i, extra := range cfg.ExtraAddons {
 		eap, err := filepath.Abs(extra)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := os.Stat(eap); err != nil {
-			return err
+			return nil, err
 		}
 		cfg.ExtraAddons[i] = eap
 	}
 
-	return nil
+	return cfg, nil
 }
 
 func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
-	if err := validateClusterConfig(cfg); err != nil {
+	cfg, err := validateClusterConfig(cfg)
+	if err != nil {
 		return nil, err
 	}
 
@@ -106,21 +128,22 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 
 	clusterID := <-incrClusterID
 
-	masterCfg := cfg.VMConfig
+	masterCfg := cfg.VMConfig.Copy()
 	masterCfg.Hostname = fmt.Sprintf("cluster%d-master", clusterID)
 	masterCfg.BootScript = bootscript.MustAsset("master.sh")
-	masterCfg.PortForwards = []int{22, 5000, 6443}
-	ret.master, err = u.NewVM(&masterCfg)
+	masterCfg.PortForwards[5000] = true
+	masterCfg.PortForwards[6443] = true
+	ret.master, err = u.NewVM(masterCfg)
 	if err != nil {
 		return nil, err
 	}
 
 	for i := 0; i < cfg.NumNodes; i++ {
-		nodeCfg := cfg.VMConfig
+		nodeCfg := cfg.VMConfig.Copy()
 		nodeCfg.Hostname = fmt.Sprintf("cluster%d-node%d", clusterID, i+1)
 		nodeCfg.BootScript = bootscript.MustAsset("node.sh")
-		nodeCfg.PortForwards = []int{22, 5000}
-		node, err := u.NewVM(&nodeCfg)
+		nodeCfg.PortForwards[5000] = true
+		node, err := u.NewVM(nodeCfg)
 		if err != nil {
 			return nil, err
 		}

@@ -38,12 +38,28 @@ type VMConfig struct {
 	// If true, create a window for the VM's display.
 	Display bool
 	// Ports to forward from localhost to the VM
-	PortForwards []int
+	PortForwards map[int]bool
 	// BootScriptPath is the path to a boot script that the VM should
 	// execute during boot. Alternatively, BootScript is a literal
 	// boot script to execute.
 	BootScriptPath string
 	BootScript     []byte
+}
+
+func (v *VMConfig) Copy() *VMConfig {
+	ret := &VMConfig{
+		BackingImagePath: v.BackingImagePath,
+		Hostname:         v.Hostname,
+		MemoryMiB:        v.MemoryMiB,
+		Display:          v.Display,
+		PortForwards:     make(map[int]bool),
+		BootScriptPath:   v.BootScriptPath,
+		BootScript:       v.BootScript,
+	}
+	for fwd, v := range v.PortForwards {
+		ret.PortForwards[fwd] = v
+	}
+	return ret
 }
 
 type VM struct {
@@ -77,30 +93,32 @@ func randomMAC() string {
 	return mac.String()
 }
 
-func validateVMConfig(cfg *VMConfig) error {
+func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
 	if cfg == nil || cfg.BackingImagePath == "" {
-		return errors.New("VMConfig with at least BackingImagePath is required")
+		return nil, errors.New("VMConfig with at least BackingImagePath is required")
 	}
+
+	cfg = cfg.Copy()
 
 	bp, err := filepath.Abs(cfg.BackingImagePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err = os.Stat(bp); err != nil {
-		return err
+		return nil, err
 	}
 	cfg.BackingImagePath = bp
 
 	if cfg.BootScriptPath != "" && cfg.BootScript != nil {
-		return errors.New("cannot specify both BootScriptPath and BootScript")
+		return nil, errors.New("cannot specify both BootScriptPath and BootScript")
 	}
 	if cfg.BootScriptPath != "" {
 		bp, err = filepath.Abs(cfg.BootScriptPath)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err = os.Stat(bp); err != nil {
-			return err
+			return nil, err
 		}
 		cfg.BootScriptPath = bp
 	}
@@ -112,7 +130,7 @@ func validateVMConfig(cfg *VMConfig) error {
 		cfg.MemoryMiB = 1024
 	}
 
-	return nil
+	return cfg, nil
 }
 
 func makeForwards(fwds map[int]int) string {
@@ -124,7 +142,8 @@ func makeForwards(fwds map[int]int) string {
 }
 
 func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
-	if err := validateVMConfig(cfg); err != nil {
+	cfg, err := validateVMConfig(cfg)
+	if err != nil {
 		return nil, err
 	}
 
@@ -151,7 +170,7 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		return nil, fmt.Errorf("creating VM disk: %v\n%s", err, string(out))
 	}
 	fwds := map[int]int{}
-	for _, fwd := range cfg.PortForwards {
+	for fwd := range cfg.PortForwards {
 		fwds[fwd] = <-u.ports
 	}
 
