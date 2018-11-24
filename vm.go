@@ -28,6 +28,7 @@ func init() {
 	}()
 }
 
+// VMConfig is the configuration for a virtual machine.
 type VMConfig struct {
 	// BackingImagePath is the base disk image for the VM.
 	BackingImagePath string
@@ -46,6 +47,7 @@ type VMConfig struct {
 	BootScript     []byte
 }
 
+// Copy returns a deep copy of the VM config.
 func (v *VMConfig) Copy() *VMConfig {
 	ret := &VMConfig{
 		BackingImagePath: v.BackingImagePath,
@@ -62,6 +64,7 @@ func (v *VMConfig) Copy() *VMConfig {
 	return ret
 }
 
+// VM is a virtual machine.
 type VM struct {
 	cfg      *VMConfig
 	u        *Universe
@@ -138,6 +141,7 @@ func makeForwards(fwds map[int]int) string {
 	return strings.Join(ret, ",")
 }
 
+// NewVM creates an unstarted VM with the given configuration.
 func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	cfg, err := validateVMConfig(cfg)
 	if err != nil {
@@ -281,6 +285,8 @@ func (v *VM) WaitReady(ctx context.Context) error {
 	}
 }
 
+// ForwardedPort returns the port on localhost that maps to the given
+// port on the VM.
 func (v *VM) ForwardedPort(dst int) int {
 	return v.forwards[dst]
 }
