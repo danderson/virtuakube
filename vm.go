@@ -53,6 +53,13 @@ func randomMAC() string {
 	if _, err := rand.Read(mac); err != nil {
 		panic("system ran out of randomness")
 	}
+	// Sets the MAC to be one of the "private" range. Private MACs
+	// have the second-least significant bit of the most significant
+	// byte set.
+	//
+	// Weirdly, it seems that virtio or the kernel really doesn't like
+	// non-private MACs, and entirely refuses to bring up the
+	// interface. Weird, but this fixes that.
 	mac[0] = 0x52
 	return mac.String()
 }
