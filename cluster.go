@@ -29,21 +29,26 @@ func init() {
 	}()
 }
 
+// ClusterConfig is the configuration for a virtual Kubernetes
+// cluster.
 type ClusterConfig struct {
 	// NumNodes is the number of Kubernetes worker nodes to run.
 	// TODO: only supports 1 currently
 	NumNodes int
-	// The VMConfig to use when creating cluster VMs.
+	// The VMConfig template to use when creating cluster VMs.
 	*VMConfig
 	// NetworkAddon is the Kubernetes network addon to install. Can be
 	// an absolute path to a manifest yaml, or one of the builtin
 	// addons "calico" or "weave".
+	//
+	// TODO: that last bit is currently a lie, only paths work.
 	NetworkAddon string
 	// ExtraAddons is a list of Kubernetes manifest yamls to apply to
 	// the cluster, in addition to the network addon.
 	ExtraAddons []string
 }
 
+// Copy returns a deep copy of the cluster config.
 func (c *ClusterConfig) Copy() *ClusterConfig {
 	ret := &ClusterConfig{
 		NumNodes:     c.NumNodes,
@@ -57,6 +62,7 @@ func (c *ClusterConfig) Copy() *ClusterConfig {
 	return ret
 }
 
+// Cluster is a virtual Kubernetes cluster.
 type Cluster struct {
 	cfg        *ClusterConfig
 	tmpdir     string
@@ -110,6 +116,8 @@ func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
 	return cfg, nil
 }
 
+// NewCluster creates an unstarted Kubernetes cluster with the given
+// configuration.
 func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	cfg, err := validateClusterConfig(cfg)
 	if err != nil {
@@ -153,6 +161,8 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	return ret, nil
 }
 
+// Start boots the virtual cluster. The universe is destroyed if any
+// VM in the cluster shuts down.
 func (c *Cluster) Start() error {
 	if err := copyFile(c.cfg.NetworkAddon, filepath.Join(c.controller.Dir(), "addons.yaml")); err != nil {
 		return err
@@ -169,6 +179,10 @@ func (c *Cluster) Start() error {
 	return nil
 }
 
+// WaitReady waits until the Kubernetes cluster is ready to use. A
+// Cluster is ready when all configured nodes are in the cluster and
+// in the "Ready" state, and all deployments and daemonsets have all
+// replicas available.
 func (c *Cluster) WaitReady(ctx context.Context) error {
 	if err := c.controller.WaitReady(ctx); err != nil {
 		return err
@@ -231,14 +245,18 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 	return nil
 }
 
+// Kubeconfig returns the path to a kubectl configuration file with
+// administrator credentials for the cluster.
 func (c *Cluster) Kubeconfig() string {
 	return filepath.Join(c.controller.Dir(), "kubeconfig")
 }
 
+// Controller returns the VM for the cluster controller node.
 func (c *Cluster) Controller() *VM {
 	return c.controller
 }
 
+// Nodes returns the VMs for the cluster nodes.
 func (c *Cluster) Nodes() []*VM {
 	return c.nodes
 }
