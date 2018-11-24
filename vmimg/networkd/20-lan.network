@@ -1,6 +1,6 @@
 [Match]
 
 [Network]
-LinkLocalAddressing=yes
+LinkLocalAddressing=ipv6
 LLMNR=yes
 MulticastDNS=yes
