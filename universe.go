@@ -164,8 +164,8 @@ func (u *Universe) Close() error {
 	return u.closeErr
 }
 
-// WaitForEnd waits for the universe to end.
-func (u *Universe) WaitForEnd(ctx context.Context) error {
+// Wait waits for the universe to end.
+func (u *Universe) Wait(ctx context.Context) error {
 	select {
 	case <-u.ctx.Done():
 		return nil
