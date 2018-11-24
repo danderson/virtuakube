@@ -16,11 +16,22 @@ import (
 	"time"
 )
 
+var incrVMID = make(chan int)
+
+func init() {
+	id := 1
+	go func() {
+		for {
+			incrVMID <- id
+			id++
+		}
+	}()
+}
+
 type VMConfig struct {
 	// BackingImagePath is the base disk image for the VM.
 	BackingImagePath string
-	// Hostname to offer the VM over DHCP
-	// TODO: does nothing yet
+	// Hostname to set on the VM
 	Hostname string
 	// Amount of RAM.
 	MemoryMiB int
@@ -28,9 +39,11 @@ type VMConfig struct {
 	Display bool
 	// Ports to forward from localhost to the VM
 	PortForwards []int
-	// BootScript is the path to a boot script that the VM should
-	// execute during boot.
-	BootScript string
+	// BootScriptPath is the path to a boot script that the VM should
+	// execute during boot. Alternatively, BootScript is a literal
+	// boot script to execute.
+	BootScriptPath string
+	BootScript     []byte
 }
 
 type VM struct {
@@ -78,19 +91,22 @@ func validateVMConfig(cfg *VMConfig) error {
 	}
 	cfg.BackingImagePath = bp
 
-	if cfg.BootScript != "" {
-		bp, err = filepath.Abs(cfg.BootScript)
+	if cfg.BootScriptPath != "" && cfg.BootScript != nil {
+		return errors.New("cannot specify both BootScriptPath and BootScript")
+	}
+	if cfg.BootScriptPath != "" {
+		bp, err = filepath.Abs(cfg.BootScriptPath)
 		if err != nil {
 			return err
 		}
 		if _, err = os.Stat(bp); err != nil {
 			return err
 		}
-		cfg.BootScript = bp
+		cfg.BootScriptPath = bp
 	}
 
 	if cfg.Hostname == "" {
-		cfg.Hostname = "vm"
+		cfg.Hostname = "vm" + strconv.Itoa(<-incrVMID)
 	}
 	if cfg.MemoryMiB == 0 {
 		cfg.MemoryMiB = 1024
@@ -185,16 +201,21 @@ func (v *VM) Dir() string {
 // VM ever shuts down.
 func (v *VM) Start() error {
 	ips := []string{v.ipv4.String(), v.ipv6.String()}
+	fmt.Println(ips)
 	if err := ioutil.WriteFile(filepath.Join(v.Dir(), "ip"), []byte(strings.Join(ips, "\n")), 0644); err != nil {
 		return err
 	}
 
-	if v.cfg.BootScript != "" {
-		bs, err := ioutil.ReadFile(v.cfg.BootScript)
+	if v.cfg.BootScriptPath != "" {
+		bs, err := ioutil.ReadFile(v.cfg.BootScriptPath)
 		if err != nil {
 			return err
 		}
 		if err := ioutil.WriteFile(filepath.Join(v.Dir(), "bootscript.sh"), bs, 0755); err != nil {
+			return err
+		}
+	} else if v.cfg.BootScript != nil {
+		if err := ioutil.WriteFile(filepath.Join(v.Dir(), "bootscript.sh"), v.cfg.BootScript, 0755); err != nil {
 			return err
 		}
 	}

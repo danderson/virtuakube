@@ -10,7 +10,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get -y update
 apt-get -y install --no-install-recommends systemd-sysv linux-image-amd64 dbus
-echo "root:metallb" | chpasswd
+echo "root:root" | chpasswd
 mkdir /host
 cat >/etc/fstab <<EOF
 /dev/vda1 / ext4 rw,relatime 0 1

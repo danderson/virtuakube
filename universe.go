@@ -119,7 +119,7 @@ func New(ctx context.Context) (*Universe, error) {
 		}
 	}()
 	go func() {
-		ip := net.IPv4(192, 168, 50, 1)
+		ip := net.IPv4(192, 168, 50, 1).To4()
 		for {
 			select {
 			case ret.ipv4s <- ip:

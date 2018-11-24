@@ -20,7 +20,7 @@ cat >/etc/docker/daemon.json <<EOF
 }
 EOF
 apt-get -y update
-apt-get -y install --no-install-recommends openssh-server ebtables ethtool curl gpg gpg-agent software-properties-common systemd-sysv isc-dhcp-client linux-image-amd64 dbus grub2 bird
+apt-get -y install --no-install-recommends openssh-server ebtables ethtool curl gpg gpg-agent software-properties-common systemd-sysv isc-dhcp-client linux-image-amd64 dbus grub2 bird policykit-1
 echo "PermitRootLogin yes" >>/etc/ssh/sshd_config
 echo "br_netfilter" >>/etc/modules
 curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add -
