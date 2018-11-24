@@ -28,6 +28,9 @@ type VMConfig struct {
 	Display bool
 	// Ports to forward from localhost to the VM
 	PortForwards []int
+	// BootScript is the path to a boot script that the VM should
+	// execute during boot.
+	BootScript string
 }
 
 type VM struct {
@@ -65,6 +68,17 @@ func validateVMConfig(cfg *VMConfig) error {
 		return err
 	}
 	cfg.BackingImagePath = bp
+
+	if cfg.BootScript != "" {
+		bp, err = filepath.Abs(cfg.BootScript)
+		if err != nil {
+			return err
+		}
+		if _, err = os.Stat(bp); err != nil {
+			return err
+		}
+		cfg.BootScript = bp
+	}
 
 	if cfg.Hostname == "" {
 		cfg.Hostname = "vm"
@@ -162,6 +176,16 @@ func (v *VM) Dir() string {
 func (v *VM) Start() error {
 	if err := ioutil.WriteFile(filepath.Join(v.Dir(), "ip"), []byte(v.ip.String()), 0644); err != nil {
 		return err
+	}
+
+	if v.cfg.BootScript != "" {
+		bs, err := ioutil.ReadFile(v.cfg.BootScript)
+		if err != nil {
+			return err
+		}
+		if err := ioutil.WriteFile(filepath.Join(v.Dir(), "bootscript.sh"), bs, 0755); err != nil {
+			return err
+		}
 	}
 
 	if err := v.cmd.Start(); err != nil {
