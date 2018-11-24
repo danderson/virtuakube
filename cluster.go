@@ -235,6 +235,14 @@ func (c *Cluster) Kubeconfig() string {
 	return filepath.Join(c.controller.Dir(), "kubeconfig")
 }
 
+func (c *Cluster) Controller() *VM {
+	return c.controller
+}
+
+func (c *Cluster) Nodes() []*VM {
+	return c.nodes
+}
+
 func nodeReady(node corev1.Node) bool {
 	for _, cond := range node.Status.Conditions {
 		if cond.Type != corev1.NodeReady {
