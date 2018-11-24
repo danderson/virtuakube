@@ -71,10 +71,11 @@ type VM struct {
 	forwards map[int]int
 	ipv4     string
 	ipv6     string
-	cmd      *exec.Cmd
 
-	closedMu sync.Mutex
-	closed   bool
+	cmd *exec.Cmd
+
+	mu      sync.Mutex
+	started bool
 }
 
 func randomMAC() string {
@@ -215,6 +216,14 @@ func (v *VM) Dir() string {
 // Start boots the virtual machine. The universe is destroyed if the
 // VM ever shuts down.
 func (v *VM) Start() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.started {
+		return errors.New("already started")
+	}
+	v.started = true
+
 	ips := []string{v.ipv4, v.ipv6}
 	if err := ioutil.WriteFile(filepath.Join(v.Dir(), "ip"), []byte(strings.Join(ips, "\n")), 0644); err != nil {
 		return err
