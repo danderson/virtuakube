@@ -40,7 +40,8 @@ type VM struct {
 	diskPath string
 	mac      string
 	forwards map[int]int
-	ip       net.IP
+	ipv4     net.IP
+	ipv6     net.IP
 	cmd      *exec.Cmd
 
 	closedMu sync.Mutex
@@ -52,6 +53,7 @@ func randomMAC() string {
 	if _, err := rand.Read(mac); err != nil {
 		panic("system ran out of randomness")
 	}
+	mac[0] = 0x52
 	return mac.String()
 }
 
@@ -137,7 +139,8 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		diskPath: diskPath,
 		mac:      randomMAC(),
 		forwards: fwds,
-		ip:       <-u.ips,
+		ipv4:     <-u.ipv4s,
+		ipv6:     <-u.ipv6s,
 	}
 	ret.cmd = exec.CommandContext(
 		u.Context(),
@@ -174,7 +177,8 @@ func (v *VM) Dir() string {
 // Start boots the virtual machine. The universe is destroyed if the
 // VM ever shuts down.
 func (v *VM) Start() error {
-	if err := ioutil.WriteFile(filepath.Join(v.Dir(), "ip"), []byte(v.ip.String()), 0644); err != nil {
+	ips := []string{v.ipv4.String(), v.ipv6.String()}
+	if err := ioutil.WriteFile(filepath.Join(v.Dir(), "ip"), []byte(strings.Join(ips, "\n")), 0644); err != nil {
 		return err
 	}
 

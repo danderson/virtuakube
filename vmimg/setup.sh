@@ -31,7 +31,9 @@ set -euxo pipefail
 trap "touch /host/boot-done" EXIT
 
 if [[ -f /host/ip ]]; then
-  ip addr add \$(cat /host/ip)/24 dev ens4
+  for ip in \$(cat /host/ip); do
+    ip addr add \$ip/24 dev ens4
+  done
 fi
 
 if [[ -f /host/bootscript.sh ]]; then

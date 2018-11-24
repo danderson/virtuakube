@@ -13,7 +13,7 @@ cp /host/networkd/* /etc/systemd/network
 systemctl start systemd-networkd
 
 # Install Docker, Kubernetes, and other utility things.
-mkdir /etc/docker
+mkdir -p /etc/docker
 cat >/etc/docker/daemon.json <<EOF
 {
   "insecure-registries" : ["localhost:5000"]
