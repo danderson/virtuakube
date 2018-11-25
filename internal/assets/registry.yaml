@@ -18,13 +18,6 @@ spec:
       containers:
       - name: registry
         image: registry:2
-        resources:
-          limits:
-            cpu: 100m
-            memory: 100Mi
-          requests:
-            cpu: 100m
-            memory: 100Mi
         env:
         - name: REGISTRY_HTTP_ADDR
           value: :5000
