@@ -7,6 +7,8 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -206,6 +208,10 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 		}
 	}
 
+	if err := adjustKubeconfig(filepath.Join(c.controller.Dir(), "kubeconfig"), c.Kubeconfig(), c.controller.ForwardedPort(6443)); err != nil {
+		return err
+	}
+
 	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
 	if err != nil {
 		return err
@@ -263,7 +269,7 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 // Kubeconfig returns the path to a kubectl configuration file with
 // administrator credentials for the cluster.
 func (c *Cluster) Kubeconfig() string {
-	return filepath.Join(c.controller.Dir(), "kubeconfig")
+	return filepath.Join(c.tmpdir, "kubeconfig")
 }
 
 // KubernetesClient returns a kubernetes client connected to the
@@ -280,6 +286,19 @@ func (c *Cluster) Controller() *VM {
 // Nodes returns the VMs for the cluster nodes.
 func (c *Cluster) Nodes() []*VM {
 	return c.nodes
+}
+
+var addrRe = regexp.MustCompile("https://.*:6443")
+
+func adjustKubeconfig(src, dst string, localPort int) error {
+	bs, err := ioutil.ReadFile(src)
+	if err != nil {
+		return err
+	}
+
+	rep := addrRe.ReplaceAll(bs, []byte("https://127.0.0.1:"+strconv.Itoa(localPort)))
+
+	return ioutil.WriteFile(dst, rep, 0644)
 }
 
 func nodeReady(node corev1.Node) bool {
