@@ -17,7 +17,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"go.universe.tf/virtuakube/internal/bootscript"
+	"go.universe.tf/virtuakube/internal/assets"
 )
 
 var incrClusterID = make(chan int)
@@ -144,7 +144,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 
 	controllerCfg := cfg.VMConfig.Copy()
 	controllerCfg.Hostname = fmt.Sprintf("cluster%d-controller", clusterID)
-	controllerCfg.BootScript = bootscript.MustAsset("controller.sh")
+	controllerCfg.BootScript = assets.MustAsset("controller.sh")
 	controllerCfg.PortForwards[5000] = true
 	controllerCfg.PortForwards[6443] = true
 	ret.controller, err = u.NewVM(controllerCfg)
@@ -155,7 +155,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	for i := 0; i < cfg.NumNodes; i++ {
 		nodeCfg := cfg.VMConfig.Copy()
 		nodeCfg.Hostname = fmt.Sprintf("cluster%d-node%d", clusterID, i+1)
-		nodeCfg.BootScript = bootscript.MustAsset("node.sh")
+		nodeCfg.BootScript = assets.MustAsset("node.sh")
 		nodeCfg.PortForwards[5000] = true
 		node, err := u.NewVM(nodeCfg)
 		if err != nil {

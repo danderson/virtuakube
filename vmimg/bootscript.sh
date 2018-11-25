@@ -38,7 +38,7 @@ cp /host/systemd/* /etc/systemd/system
 systemctl daemon-reload
 
 # Enable essential services for future boots.
-systemctl enable systemd-resolved systemd-networkd registry
+systemctl enable systemd-resolved systemd-networkd
 
 # Pre-pull images for Kubernetes and the addon pods we care about.
 systemctl start docker
