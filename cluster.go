@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -71,6 +72,9 @@ type Cluster struct {
 
 	controller *VM
 	nodes      []*VM
+
+	startedMu sync.Mutex
+	started   bool
 }
 
 func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
@@ -164,6 +168,14 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 // Start boots the virtual cluster. The universe is destroyed if any
 // VM in the cluster shuts down.
 func (c *Cluster) Start() error {
+	c.startedMu.Lock()
+	defer c.startedMu.Unlock()
+
+	if c.started {
+		return errors.New("already started")
+	}
+	c.started = true
+
 	if err := copyFile(c.cfg.NetworkAddon, filepath.Join(c.controller.Dir(), "addons.yaml")); err != nil {
 		return err
 	}
@@ -176,6 +188,17 @@ func (c *Cluster) Start() error {
 			return err
 		}
 	}
+
+	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
+	if err != nil {
+		return err
+	}
+
+	c.client, err = kubernetes.NewForConfig(config)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -192,19 +215,8 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
 
-	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
-	if err != nil {
-		return err
-	}
-
-	c.client, err = kubernetes.NewForConfig(config)
-	if err != nil {
-		return err
-	}
-
-	err = waitFor(ctx, func() (bool, error) {
+	err := waitFor(ctx, func() (bool, error) {
 		nodes, err := c.client.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
 			return false, err
@@ -249,6 +261,12 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 // administrator credentials for the cluster.
 func (c *Cluster) Kubeconfig() string {
 	return filepath.Join(c.controller.Dir(), "kubeconfig")
+}
+
+// KubernetesClient returns a kubernetes client connected to the
+// cluster.
+func (c *Cluster) KubernetesClient() *kubernetes.Clientset {
+	return c.client
 }
 
 // Controller returns the VM for the cluster controller node.
