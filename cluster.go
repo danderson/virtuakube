@@ -100,14 +100,6 @@ func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
 	if cfg.NetworkAddon == "" {
 		return nil, errors.New("must specify network addon")
 	}
-	nap, err := filepath.Abs(cfg.NetworkAddon)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(nap); err != nil {
-		return nil, err
-	}
-	cfg.NetworkAddon = nap
 
 	for i, extra := range cfg.ExtraAddons {
 		eap, err := filepath.Abs(extra)
@@ -299,10 +291,19 @@ func (c *Cluster) Registry() int {
 	return c.controller.ForwardedPort(30000)
 }
 
+func networkAddonBytes(addon string) ([]byte, error) {
+	bs, err := assets.Asset("net/" + addon + ".yaml")
+	if err == nil {
+		return bs, nil
+	}
+
+	return ioutil.ReadFile(addon)
+}
+
 func assembleAddons(networkAddon string, extraAddons []string) ([]byte, error) {
 	var out [][]byte
 
-	bs, err := ioutil.ReadFile(networkAddon)
+	bs, err := networkAddonBytes(networkAddon)
 	if err != nil {
 		return nil, err
 	}
