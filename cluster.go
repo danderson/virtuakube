@@ -189,16 +189,6 @@ func (c *Cluster) Start() error {
 		}
 	}
 
-	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
-	if err != nil {
-		return err
-	}
-
-	c.client, err = kubernetes.NewForConfig(config)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -216,7 +206,17 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 		}
 	}
 
-	err := waitFor(ctx, func() (bool, error) {
+	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
+	if err != nil {
+		return err
+	}
+
+	c.client, err = kubernetes.NewForConfig(config)
+	if err != nil {
+		return err
+	}
+
+	err = waitFor(ctx, func() (bool, error) {
 		nodes, err := c.client.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
 			return false, err
@@ -253,6 +253,9 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 
 		return true, nil
 	})
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
