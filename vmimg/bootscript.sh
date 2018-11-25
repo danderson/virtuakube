@@ -16,7 +16,7 @@ systemctl start systemd-networkd
 mkdir -p /etc/docker
 cat >/etc/docker/daemon.json <<EOF
 {
-  "insecure-registries" : ["localhost:5000"]
+  "insecure-registries" : ["localhost:30000"]
 }
 EOF
 apt-get -y update
@@ -33,9 +33,6 @@ apt-get -y purge --autoremove gpg gpg-agent software-properties-common
 # Shut down kubelet for the remainder of this particular script,
 # because it spams the system journal with its crashloops.
 systemctl stop kubelet
-
-cp /host/systemd/* /etc/systemd/system
-systemctl daemon-reload
 
 # Enable essential services for future boots.
 systemctl enable systemd-resolved systemd-networkd

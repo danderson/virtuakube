@@ -4,7 +4,7 @@
 # the machine stutter or lock up. So, we nice it very hard in both CPU
 # and I/O to keep things smooth.
 all:
-	nice -19 ionice -c3 make build-img
+	nice -n 19 ionice -c3 make build-img
 
 build-img:
 	docker build -t virtuakube-fs .

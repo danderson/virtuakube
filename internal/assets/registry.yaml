@@ -45,15 +45,15 @@ apiVersion: v1
 kind: Service
 metadata:
   name: registry
-  namespace: registry
+  namespace: kube-system
   labels:
     app: registry
-    component: main
 spec:
   type: NodePort
   ports:
   - name: registry
     port: 5000
+    nodePort: 30000
     protocol: TCP
   selector:
     app: registry

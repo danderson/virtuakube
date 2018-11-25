@@ -1,6 +1,7 @@
 package virtuakube
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -156,7 +157,6 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 		nodeCfg := cfg.VMConfig.Copy()
 		nodeCfg.Hostname = fmt.Sprintf("cluster%d-node%d", clusterID, i+1)
 		nodeCfg.BootScript = assets.MustAsset("node.sh")
-		nodeCfg.PortForwards[5000] = true
 		node, err := u.NewVM(nodeCfg)
 		if err != nil {
 			return nil, err
@@ -178,7 +178,11 @@ func (c *Cluster) Start() error {
 	}
 	c.started = true
 
-	if err := copyFile(c.cfg.NetworkAddon, filepath.Join(c.controller.Dir(), "addons.yaml")); err != nil {
+	bs, err := assembleAddons(c.cfg.NetworkAddon, c.cfg.ExtraAddons)
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(filepath.Join(c.controller.Dir(), "addons.yaml"), bs, 0644); err != nil {
 		return err
 	}
 
@@ -286,6 +290,27 @@ func (c *Cluster) Controller() *VM {
 // Nodes returns the VMs for the cluster nodes.
 func (c *Cluster) Nodes() []*VM {
 	return c.nodes
+}
+
+func assembleAddons(networkAddon string, extraAddons []string) ([]byte, error) {
+	var out [][]byte
+
+	bs, err := ioutil.ReadFile(networkAddon)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, bs)
+	out = append(out, assets.MustAsset("registry.yaml"))
+
+	for _, extra := range extraAddons {
+		bs, err = ioutil.ReadFile(extra)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bs)
+	}
+
+	return bytes.Join(out, []byte("\n---\n")), nil
 }
 
 var addrRe = regexp.MustCompile("https://.*:6443")
