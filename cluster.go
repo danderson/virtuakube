@@ -146,7 +146,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	controllerCfg := cfg.VMConfig.Copy()
 	controllerCfg.Hostname = fmt.Sprintf("cluster%d-controller", clusterID)
 	controllerCfg.BootScript = assets.MustAsset("controller.sh")
-	controllerCfg.PortForwards[5000] = true
+	controllerCfg.PortForwards[30000] = true
 	controllerCfg.PortForwards[6443] = true
 	ret.controller, err = u.NewVM(controllerCfg)
 	if err != nil {
@@ -290,6 +290,13 @@ func (c *Cluster) Controller() *VM {
 // Nodes returns the VMs for the cluster nodes.
 func (c *Cluster) Nodes() []*VM {
 	return c.nodes
+}
+
+// Registry returns the port on localhost for the in-cluster
+// registry. Within the cluster, the registry is reachable at
+// localhost:30000 on all nodes.
+func (c *Cluster) Registry() int {
+	return c.controller.ForwardedPort(30000)
 }
 
 func assembleAddons(networkAddon string, extraAddons []string) ([]byte, error) {
