@@ -12,6 +12,9 @@ bootstrapTokens:
   ttl: "24h"
 apiEndpoint:
   advertiseAddress: $(head -1 /host/ip)
+nodeRegistration:
+  kubeletExtraArgs:
+    node-ip: $(head -1 /host/ip)
 ---
 apiVersion: kubeadm.k8s.io/v1alpha3
 kind: ClusterConfiguration
