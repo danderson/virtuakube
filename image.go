@@ -127,10 +127,10 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	vmCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(
-		ctx,
+		vmCtx,
 		"qemu-system-x86_64",
 		"-enable-kvm",
 		"-m", "2048",
@@ -142,6 +142,9 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		"-kernel", filepath.Join(tmp, "vmlinuz"),
 		"-initrd", filepath.Join(tmp, "initrd.img"),
 		"-append", "root=/dev/vda1 rw",
+		"-nographic",
+		"-serial", "null",
+		"-monitor", "none",
 	)
 	if cfg.Debug {
 		cmd.Stdout = os.Stdout
@@ -155,16 +158,16 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		cancel()
 	}()
 
-	client, err := dialSSH(ctx, "127.0.0.1:50000")
+	client, err := dialSSH(vmCtx, "127.0.0.1:50000")
 	if err != nil {
 		return fmt.Errorf("connecting to VM with SSH: %v", err)
 	}
 	defer client.Close()
 
-	if err := uploadAndRun(ctx, client, cfg.Debug, assets.MustAsset("bootscript-k8s.sh")); err != nil {
+	if err := uploadAndRun(vmCtx, client, cfg.Debug, assets.MustAsset("bootscript-k8s.sh")); err != nil {
 		return err
 	}
-	if err := uploadAndRun(ctx, client, cfg.Debug, cfg.InstallScript); err != nil {
+	if err := uploadAndRun(vmCtx, client, cfg.Debug, cfg.InstallScript); err != nil {
 		return err
 	}
 
@@ -180,8 +183,17 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	if err := sess.Run("poweroff"); err != nil {
 		return fmt.Errorf("powering off VM: %v", err)
 	}
+	<-vmCtx.Done()
 
-	<-ctx.Done()
+	err = buildCmd(
+		ctx, cfg.Debug,
+		"qemu-img", "convert",
+		"-O", "qcow2",
+		imgPath, cfg.OutputPath,
+	)
+	if err != nil {
+		return fmt.Errorf("running qemu-img convert: %v", err)
+	}
 
 	return nil
 }
