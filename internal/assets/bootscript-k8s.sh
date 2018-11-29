@@ -6,8 +6,51 @@ export DEBIAN_FRONTEND=noninteractive
 # Updated by `make update-addons`
 ADDONS="registry:2 quay.io/calico/typha:v3.3.1 quay.io/calico/node:v3.3.1 quay.io/calico/cni:v3.3.1 docker.io/weaveworks/weave-kube:2.5.0 docker.io/weaveworks/weave-npc:2.5.0 "
 
-# Get DNS and networking up.
-cat >/etc/systemd.resolved.conf <<EOF
+cat >/etc/fstab <<EOF
+/dev/vda1 / ext4 rw,relatime 0 1
+host0 /host 9p trans=virtio,version=9p2000.L 0 0
+EOF
+
+cat >/etc/initramfs-tools/modules <<EOF
+9p
+9pnet
+9pnet_virtio
+EOF
+update-initramfs -u
+
+cat >/boot.sh <<EOF
+#!/bin/bash
+
+set -euxo pipefail
+
+trap "touch /host/boot-done" EXIT
+
+if [[ -f /host/ip ]]; then
+  for ip in \$(cat /host/ip); do
+    ip addr add \$ip/24 dev ens4
+  done
+fi
+
+if [[ -f /host/bootscript.sh ]]; then
+  /host/bootscript.sh
+fi
+EOF
+chmod 555 /boot.sh
+cat >/etc/systemd/system/bootscript.service <<EOF
+[Unit]
+After=network-online.target
+RequiresMountsFor=/host
+
+[Service]
+Type=oneshot
+ExecStart=/boot.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable bootscript.service
+
+cat >/etc/systemd/resolved.conf <<EOF
 [Resolve]
 DNSSEC=no
 DNSStubListener=yes
@@ -56,10 +99,6 @@ systemctl start docker
 kubeadm config images pull
 
 echo $ADDONS | xargs -n1 docker pull
-
-# Rebuild the initramfs, to get rid of an irritating fsck error
-# because of a partial build in the container universe.
-update-initramfs -u
 
 # Install grub.
 grub-install --no-floppy /dev/vda
