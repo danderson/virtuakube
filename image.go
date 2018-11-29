@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"go.universe.tf/virtuakube/internal/assets"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -160,34 +161,14 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	}
 	defer client.Close()
 
+	if err := uploadAndRun(ctx, client, cfg.Debug, assets.MustAsset("bootscript-k8s.sh")); err != nil {
+		return err
+	}
+	if err := uploadAndRun(ctx, client, cfg.Debug, cfg.InstallScript); err != nil {
+		return err
+	}
+
 	sess, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("creating SSH session: %v", err)
-	}
-	defer sess.Close()
-	if cfg.Debug {
-		sess.Stdout = os.Stdout
-		sess.Stderr = os.Stderr
-	}
-	sess.Stdin = bytes.NewBuffer(cfg.InstallScript)
-	if err := sess.Run("cat >/tmp/install.sh"); err != nil {
-		return fmt.Errorf("copying install script: %v", err)
-	}
-
-	sess, err = client.NewSession()
-	if err != nil {
-		return fmt.Errorf("creating SSH session: %v", err)
-	}
-	defer sess.Close()
-	if cfg.Debug {
-		sess.Stdout = os.Stdout
-		sess.Stderr = os.Stderr
-	}
-	if err := sess.Run("bash /tmp/install.sh"); err != nil {
-		return fmt.Errorf("running install script: %v", err)
-	}
-
-	sess, err = client.NewSession()
 	if err != nil {
 		return fmt.Errorf("creating SSH session: %v", err)
 	}
@@ -201,6 +182,37 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	}
 
 	<-ctx.Done()
+
+	return nil
+}
+
+func uploadAndRun(ctx context.Context, client *ssh.Client, debug bool, script []byte) error {
+	sess, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("creating SSH session: %v", err)
+	}
+	defer sess.Close()
+	if debug {
+		sess.Stdout = os.Stdout
+		sess.Stderr = os.Stderr
+	}
+	sess.Stdin = bytes.NewBuffer(script)
+	if err := sess.Run("cat >/tmp/install.sh"); err != nil {
+		return fmt.Errorf("copying script: %v", err)
+	}
+
+	sess, err = client.NewSession()
+	if err != nil {
+		return fmt.Errorf("creating SSH session: %v", err)
+	}
+	defer sess.Close()
+	if debug {
+		sess.Stdout = os.Stdout
+		sess.Stderr = os.Stderr
+	}
+	if err := sess.Run("bash /tmp/install.sh"); err != nil {
+		return fmt.Errorf("running script: %v", err)
+	}
 
 	return nil
 }
