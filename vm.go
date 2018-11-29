@@ -290,3 +290,6 @@ func (v *VM) WaitReady(ctx context.Context) error {
 func (v *VM) ForwardedPort(dst int) int {
 	return v.forwards[dst]
 }
+
+func (v *VM) IPv4() string { return v.ipv4 }
+func (v *VM) IPv6() string { return v.ipv6 }
