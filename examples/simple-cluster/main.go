@@ -65,8 +65,8 @@ func run() error {
 
 	fmt.Printf(`Cluster is starting up. SSH ports for debugging (password is "root"):
 
-controller: ssh root@localhost:%d
-      node: ssh root@localhost:%d
+controller: ssh -p%d root@localhost
+      node: ssh -p%d root@localhost
 
 Waiting for cluster to come up...
 `, cluster.Controller().ForwardedPort(22), cluster.Nodes()[0].ForwardedPort(22))

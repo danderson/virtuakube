@@ -13,15 +13,15 @@ import (
 	"sync"
 )
 
-var tools = []string{
+var universeTools = []string{
 	"vde_switch",
 	"qemu-system-x86_64",
 	"qemu-img",
 }
 
-// CheckTools returns an error if a command required by virtuakube is
+// checkTools returns an error if a command required by virtuakube is
 // not available on the system.
-func CheckTools() error {
+func checkTools(tools []string) error {
 	missing := []string{}
 	for _, tool := range tools {
 		_, err := exec.LookPath(tool)
@@ -62,7 +62,7 @@ type Universe struct {
 // lifetime of the universe, i.e. if the context is canceled or times
 // out, the universe will be destroyed.
 func New(ctx context.Context) (*Universe, error) {
-	if err := CheckTools(); err != nil {
+	if err := checkTools(universeTools); err != nil {
 		return nil, err
 	}
 
