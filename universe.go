@@ -45,8 +45,8 @@ type Universe struct {
 	ctx      context.Context
 	shutdown context.CancelFunc
 	ports    chan int
-	ipv4s    chan string
-	ipv6s    chan string
+	nextIP4  net.IP
+	nextIP6  net.IP
 
 	swtch *exec.Cmd
 	sock  string
@@ -78,8 +78,8 @@ func New(ctx context.Context) (*Universe, error) {
 		ctx:      ctx,
 		shutdown: shutdown,
 		ports:    make(chan int),
-		ipv4s:    make(chan string),
-		ipv6s:    make(chan string),
+		nextIP4:  net.ParseIP("192.168.50.1").To4(),
+		nextIP6:  net.ParseIP("fd00::1"),
 		swtch: exec.CommandContext(
 			ctx,
 			"vde_switch",
@@ -110,28 +110,6 @@ func New(ctx context.Context) (*Universe, error) {
 			select {
 			case ret.ports <- port:
 				port++
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	go func() {
-		ip := net.IPv4(192, 168, 50, 1).To4()
-		for {
-			select {
-			case ret.ipv4s <- ip.String():
-				ip[3]++
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	go func() {
-		ip := net.ParseIP("fd00::1")
-		for {
-			select {
-			case ret.ipv6s <- ip.String():
-				ip[15]++
 			case <-ctx.Done():
 				return
 			}
@@ -186,4 +164,20 @@ func (u *Universe) Wait(ctx context.Context) error {
 
 func (u *Universe) switchSock() string {
 	return u.sock
+}
+
+func (u *Universe) ipv4() net.IP {
+	ret := u.nextIP4
+	u.nextIP4 = make(net.IP, 4)
+	copy(u.nextIP4, ret)
+	u.nextIP4[3]++
+	return ret
+}
+
+func (u *Universe) ipv6() net.IP {
+	ret := u.nextIP6
+	u.nextIP6 = make(net.IP, 16)
+	copy(u.nextIP6, ret)
+	u.nextIP6[15]++
+	return ret
 }

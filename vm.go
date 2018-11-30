@@ -77,8 +77,8 @@ type VM struct {
 	diskPath string
 	mac      string
 	forwards map[int]int
-	ipv4     string
-	ipv6     string
+	ipv4     net.IP
+	ipv6     net.IP
 	ctx      context.Context
 	shutdown context.CancelFunc
 
@@ -181,8 +181,8 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		diskPath: diskPath,
 		mac:      randomMAC(),
 		forwards: fwds,
-		ipv4:     <-u.ipv4s,
-		ipv6:     <-u.ipv6s,
+		ipv4:     u.ipv4(),
+		ipv6:     u.ipv6(),
 		ctx:      ctx,
 		shutdown: cancel,
 		ready:    make(chan *ssh.Client),
@@ -344,5 +344,5 @@ func (v *VM) ForwardedPort(dst int) int {
 	return v.forwards[dst]
 }
 
-func (v *VM) IPv4() string { return v.ipv4 }
-func (v *VM) IPv6() string { return v.ipv6 }
+func (v *VM) IPv4() net.IP { return v.ipv4 }
+func (v *VM) IPv6() net.IP { return v.ipv6 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -301,17 +302,21 @@ func (c *Cluster) startNode(node *VM) error {
 		return err
 	}
 
+	controllerAddr := &net.TCPAddr{
+		IP:   c.controller.IPv4(),
+		Port: 6443,
+	}
 	nodeConfig := fmt.Sprintf(`
 apiVersion: kubeadm.k8s.io/v1alpha3
 kind: JoinConfiguration
 token: "000000.0000000000000000"
 discoveryTokenUnsafeSkipCAVerification: true
 discoveryTokenAPIServers:
-- %s:6443
+- %s
 nodeRegistration:
   kubeletExtraArgs:
     node-ip: %s
-`, c.controller.IPv4(), node.IPv4())
+`, controllerAddr, node.IPv4())
 	if err := node.WriteFile("/tmp/k8s.conf", []byte(nodeConfig)); err != nil {
 		return err
 	}
