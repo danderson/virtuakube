@@ -39,6 +39,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
 RUN echo "root:root" | chpasswd
 RUN echo "PermitRootLogin yes" >>/etc/ssh/sshd_config
 RUN echo "auto ens3\niface ens3 inet dhcp" >/etc/network/interfaces
+RUN echo "supersede domain-name-servers 8.8.8.8;" >>/etc/dhcp/dhclient.conf
 `
 
 	setupScript = `
@@ -46,7 +47,12 @@ set -euxo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get -y upgrade --no-install-recommends
-apt-get -y install --no-install-recommends ca-certificates grub2 resolvconf
+apt-get -y install --no-install-recommends ca-certificates grub2
+
+cat >/etc/hosts <<EOF
+127.0.0.1 localhost
+::1 localhost
+EOF
 
 cat >/etc/fstab <<EOF
 /dev/vda1 / ext4 rw,relatime 0 1
@@ -58,6 +64,9 @@ grub-install /dev/vda
 perl -pi -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub
 update-grub2
 
+rm /etc/machine-id /var/lib/dbus/machine-id
+touch /etc/machine-id
+chattr +i /etc/machine-id
 poweroff
 `
 )
@@ -299,7 +308,11 @@ deb http://apt.kubernetes.io/ kubernetes-xenial main
 		}
 	}
 
-	if _, err := v.Run("poweroff"); err != nil {
+	err = v.RunMultiple(
+		"sync",
+		"poweroff",
+	)
+	if err != nil {
 		return err
 	}
 

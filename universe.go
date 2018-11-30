@@ -78,7 +78,7 @@ func New(ctx context.Context) (*Universe, error) {
 		ctx:      ctx,
 		shutdown: shutdown,
 		ports:    make(chan int),
-		nextIP4:  net.ParseIP("192.168.50.1").To4(),
+		nextIP4:  net.ParseIP("172.20.0.1").To4(),
 		nextIP6:  net.ParseIP("fd00::1"),
 		swtch: exec.CommandContext(
 			ctx,

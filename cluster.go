@@ -253,7 +253,7 @@ nodeRegistration:
 apiVersion: kubeadm.k8s.io/v1alpha3
 kind: ClusterConfiguration
 networking:
-  podSubnet: "10.42.0.0/16"
+  podSubnet: "192.168.0.0/16"
 kubernetesVersion: "1.12.3"
 clusterName: "virtuakube"
 apiServerCertSANs:
