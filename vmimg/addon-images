@@ -1,6 +1,0 @@
-registry:2
-quay.io/calico/typha:v3.3.1
-quay.io/calico/node:v3.3.1
-quay.io/calico/cni:v3.3.1
-docker.io/weaveworks/weave-kube:2.5.0
-docker.io/weaveworks/weave-npc:2.5.0
