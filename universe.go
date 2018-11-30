@@ -41,8 +41,6 @@ func checkTools(tools []string) error {
 
 // A Universe is a virtual test network and its associated resources.
 type Universe struct {
-	VMBaseImage string
-
 	tmpdir   string
 	ctx      context.Context
 	shutdown context.CancelFunc

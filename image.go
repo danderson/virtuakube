@@ -69,6 +69,10 @@ type BuildConfig struct {
 }
 
 func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
+	if err := checkTools(buildTools); err != nil {
+		return err
+	}
+
 	tmp, err := ioutil.TempDir(cfg.TempDir, "virtuakube-build")
 	if err != nil {
 		return fmt.Errorf("creating tempdir in %q: %v", cfg.TempDir, err)
@@ -220,6 +224,10 @@ func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
 }
 
 func BuildK8sImage(ctx context.Context, cfg *BuildConfig) error {
+	if err := checkTools(buildTools); err != nil {
+		return err
+	}
+
 	if err := BuildBaseImage(ctx, cfg); err != nil {
 		return err
 	}
