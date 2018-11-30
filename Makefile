@@ -8,9 +8,7 @@ update-addons:
 # Weave
 	curl -L 'https://cloud.weave.works/k8s/net?k8s-version=1.12' >internal/assets/net/weave.yaml
 
-	grep -h "image:" internal/assets/*.yaml internal/assets/net/*.yaml | cut -f2- -d: | tr -d "'\" " | tr '\n' ' ' >addon-images
-	perl -pi -e "s#^ADDONS=.*#ADDONS=\"$$(cat addon-images)\"#g" internal/assets/bootscript-k8s.sh
-	rm -f addon-images
+	grep -h "image:" internal/assets/*.yaml internal/assets/net/*.yaml | cut -f2- -d: | tr -d "'\" " | tr '\n' ' ' >internal/assets/addon-images
 	+make update-assets
 
 update-assets:

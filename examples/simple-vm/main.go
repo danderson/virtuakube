@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"time"
 
 	"go.universe.tf/virtuakube"
 )
@@ -43,12 +42,10 @@ func run() error {
 	}()
 
 	vm, err := universe.NewVM(&virtuakube.VMConfig{
-		BackingImagePath: *baseImg,
-		MemoryMiB:        *memory,
-		Display:          *display,
-		PortForwards: map[int]bool{
-			22: true,
-		},
+		Image:        *baseImg,
+		MemoryMiB:    *memory,
+		PortForwards: map[int]bool{22: true},
+		CommandLog:   os.Stdout,
 	})
 	if err != nil {
 		return fmt.Errorf("Creating VM: %v", err)
@@ -58,23 +55,12 @@ func run() error {
 		return fmt.Errorf("Starting VM: %v", err)
 	}
 
-	fmt.Printf(`VM is starting up. SSH access (password is "root"):
+	fmt.Printf(`VM is up. SSH access (password is "root"):
 
 ssh -p%d root@localhost
 
-Waiting for VM to come up...
-`, vm.ForwardedPort(22))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	if err := vm.WaitReady(ctx); err != nil {
-		return fmt.Errorf("Waiting for VM to be ready: %v", err)
-	}
-
-	fmt.Printf(`
-VM is running.
 Hit ctrl+C to shut down.
-`)
+`, vm.ForwardedPort(22))
 
 	if err := universe.Wait(context.Background()); err != nil {
 		return fmt.Errorf("Waiting for universe to end: %v", err)

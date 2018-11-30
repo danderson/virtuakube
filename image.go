@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"go.universe.tf/virtuakube/internal/assets"
 	"golang.org/x/crypto/ssh"
+
+	"go.universe.tf/virtuakube/internal/assets"
 )
 
 var buildTools = []string{
@@ -26,54 +29,61 @@ const (
 FROM debian:buster
 RUN apt-get -y update
 RUN DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
-  dbus              \
+  dbus \
+  ifupdown \
+  isc-dhcp-client \
+  isc-dhcp-common \
   linux-image-amd64 \
-  openssh-server    \
+  openssh-server \
   systemd-sysv
 RUN echo "root:root" | chpasswd
-RUN echo -e "[Match]\nMACAddress=52:54:00:12:34:56\n[Network]\nDHCP=ipv4" >/etc/systemd/network/10-internet.network
 RUN echo "PermitRootLogin yes" >>/etc/ssh/sshd_config
-RUN systemctl enable systemd-networkd
+RUN echo "auto ens3\niface ens3 inet dhcp" >/etc/network/interfaces
+`
+
+	setupScript = `
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get -y upgrade --no-install-recommends
+apt-get -y install --no-install-recommends ca-certificates grub2 resolvconf
+
+cat >/etc/fstab <<EOF
+/dev/vda1 / ext4 rw,relatime 0 1
+EOF
+
+update-initramfs -u
+
+grub-install /dev/vda
+perl -pi -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub
+update-grub2
+
+poweroff
 `
 )
 
-// BuildConfig is the configuration for a disk image build.
 type BuildConfig struct {
-	// InstallScript is the script to run on the initial VM image to
-	// turn it into the final image.
-	InstallScript []byte
-
-	// OutputPath is the destination path for the built VM image.
 	OutputPath string
-	// TempDir is a temporary directory to use as scratch space. It
-	// should have enough free space to store ~2 copies of the final
-	// image.
-	TempDir string
-
-	// If true, create a window for the VM's display, and don't halt
-	// the VM if the install script fails.
-	Debug bool
+	TempDir    string
+	BuildLog   io.Writer
 }
 
-func BuildImage(ctx context.Context, cfg *BuildConfig) error {
-	var err error
-
+func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
 	tmp, err := ioutil.TempDir(cfg.TempDir, "virtuakube-build")
 	if err != nil {
-		return fmt.Errorf("creating tempdir %q: %v", tmp, err)
+		return fmt.Errorf("creating tempdir in %q: %v", cfg.TempDir, err)
 	}
 	defer os.RemoveAll(tmp)
 
 	if err := ioutil.WriteFile(filepath.Join(tmp, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
-		return fmt.Errorf("writing Dockerfile: %v", err)
+		return fmt.Errorf("writing dockerfile: %v", err)
 	}
 
 	iidPath := filepath.Join(tmp, "iid")
-	err = buildCmd(
-		ctx, cfg.Debug,
-		"docker", "build", "--iidfile", iidPath, tmp,
-	)
-	if err != nil {
+	cmd := exec.CommandContext(ctx, "docker", "build", "--iidfile", iidPath, tmp)
+	cmd.Stdout = cfg.BuildLog
+	cmd.Stderr = cfg.BuildLog
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("running docker build: %v", err)
 	}
 
@@ -83,16 +93,18 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	}
 
 	cidPath := filepath.Join(tmp, "cid")
-	err = buildCmd(
-		ctx, cfg.Debug,
+	cmd = exec.CommandContext(
+		ctx,
 		"docker", "run",
 		"--cidfile", cidPath,
 		fmt.Sprintf("--mount=type=bind,source=%s,destination=/tmp/ctx", tmp),
 		string(iid),
 		"cp", "/vmlinuz", "/initrd.img", "/tmp/ctx",
 	)
-	if err != nil {
-		return fmt.Errorf("running docker run: %v", err)
+	cmd.Stdout = cfg.BuildLog
+	cmd.Stderr = cfg.BuildLog
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("extracting kernel from container: %v", err)
 	}
 
 	cid, err := ioutil.ReadFile(cidPath)
@@ -101,25 +113,29 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	}
 
 	tarPath := filepath.Join(tmp, "fs.tar")
-	err = buildCmd(
-		ctx, cfg.Debug,
+	cmd = exec.CommandContext(
+		ctx,
 		"docker", "export",
 		"-o", tarPath,
 		string(cid),
 	)
-	if err != nil {
+	cmd.Stdout = cfg.BuildLog
+	cmd.Stderr = cfg.BuildLog
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("exporting image tarball: %v", err)
 	}
 
 	imgPath := filepath.Join(tmp, "fs.img")
-	err = buildCmd(
-		ctx, cfg.Debug,
+	cmd = exec.CommandContext(
+		ctx,
 		"virt-make-fs",
 		"--partition", "--format=qcow2",
 		"--type=ext4", "--size=10G",
 		tarPath, imgPath,
 	)
-	if err != nil {
+	cmd.Stdout = cfg.BuildLog
+	cmd.Stderr = cfg.BuildLog
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("creating image file: %v", err)
 	}
 
@@ -129,7 +145,7 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 
 	vmCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(
+	cmd = exec.CommandContext(
 		vmCtx,
 		"qemu-system-x86_64",
 		"-enable-kvm",
@@ -146,10 +162,8 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		"-serial", "null",
 		"-monitor", "none",
 	)
-	if cfg.Debug {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
+	cmd.Stdout = cfg.BuildLog
+	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting build VM: %v", err)
 	}
@@ -164,53 +178,16 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	}
 	defer client.Close()
 
-	if err := uploadAndRun(vmCtx, client, cfg.Debug, assets.MustAsset("bootscript-k8s.sh")); err != nil {
-		return err
-	}
-	if err := uploadAndRun(vmCtx, client, cfg.Debug, cfg.InstallScript); err != nil {
-		return err
-	}
-
 	sess, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("creating SSH session: %v", err)
 	}
 	defer sess.Close()
-	if cfg.Debug {
-		sess.Stdout = os.Stdout
-		sess.Stderr = os.Stderr
-	}
-	if err := sess.Run("poweroff"); err != nil {
-		return fmt.Errorf("powering off VM: %v", err)
-	}
-	<-vmCtx.Done()
-
-	err = buildCmd(
-		ctx, cfg.Debug,
-		"qemu-img", "convert",
-		"-O", "qcow2",
-		imgPath, cfg.OutputPath,
-	)
-	if err != nil {
-		return fmt.Errorf("running qemu-img convert: %v", err)
-	}
-
-	return nil
-}
-
-func uploadAndRun(ctx context.Context, client *ssh.Client, debug bool, script []byte) error {
-	sess, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("creating SSH session: %v", err)
-	}
-	defer sess.Close()
-	if debug {
-		sess.Stdout = os.Stdout
-		sess.Stderr = os.Stderr
-	}
-	sess.Stdin = bytes.NewBuffer(script)
+	sess.Stdout = cfg.BuildLog
+	sess.Stderr = cfg.BuildLog
+	sess.Stdin = bytes.NewBuffer([]byte(setupScript))
 	if err := sess.Run("cat >/tmp/install.sh"); err != nil {
-		return fmt.Errorf("copying script: %v", err)
+		return fmt.Errorf("copying setup script: %v", err)
 	}
 
 	sess, err = client.NewSession()
@@ -218,24 +195,107 @@ func uploadAndRun(ctx context.Context, client *ssh.Client, debug bool, script []
 		return fmt.Errorf("creating SSH session: %v", err)
 	}
 	defer sess.Close()
-	if debug {
-		sess.Stdout = os.Stdout
-		sess.Stderr = os.Stderr
-	}
+	sess.Stdout = cfg.BuildLog
+	sess.Stderr = cfg.BuildLog
 	if err := sess.Run("bash /tmp/install.sh"); err != nil {
-		return fmt.Errorf("running script: %v", err)
+		return fmt.Errorf("running setup script: %v", err)
+	}
+
+	// Wait for qemu to terminate, since the script invoked `poweroff`.
+	<-vmCtx.Done()
+
+	cmd = exec.CommandContext(
+		ctx,
+		"qemu-img", "convert",
+		"-O", "qcow2",
+		imgPath, cfg.OutputPath,
+	)
+	cmd.Stdout = cfg.BuildLog
+	cmd.Stderr = cfg.BuildLog
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("running qemu-img convert: %v", err)
 	}
 
 	return nil
 }
 
-func buildCmd(ctx context.Context, debug bool, command string, args ...string) error {
-	cmd := exec.CommandContext(ctx, command, args...)
-	if debug {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+func BuildK8sImage(ctx context.Context, cfg *BuildConfig) error {
+	if err := BuildBaseImage(ctx, cfg); err != nil {
+		return err
 	}
-	return cmd.Run()
+
+	u, err := New(ctx)
+	if err != nil {
+		return err
+	}
+	defer u.Close()
+
+	v, err := u.NewVM(&VMConfig{
+		Image:      cfg.OutputPath,
+		NoOverlay:  true,
+		MemoryMiB:  2048,
+		CommandLog: cfg.BuildLog,
+	})
+	if err != nil {
+		return err
+	}
+	defer v.Close()
+
+	if err := v.Start(); err != nil {
+		return err
+	}
+
+	repos := []byte(`
+deb [arch=amd64] https://download.docker.com/linux/debian buster stable
+deb http://apt.kubernetes.io/ kubernetes-xenial main
+`)
+	if err := v.WriteFile("/etc/apt/sources.list.d/k8s.list", repos); err != nil {
+		return err
+	}
+
+	pkgs := []string{
+		"curl",
+		"ebtables",
+		"ethtool",
+		"gpg",
+		"gpg-agent",
+	}
+	k8sPkgs := []string{
+		"docker-ce=18.06.*",
+		"kubelet",
+		"kubeadm",
+		"kubectl",
+	}
+	err = v.RunMultiple(
+		"DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends "+strings.Join(pkgs, " "),
+		"curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add -",
+		"curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -",
+		"apt-get -y update",
+		"DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends "+strings.Join(k8sPkgs, " "),
+		"echo br_netfilter >>/etc/modules",
+		"echo export KUBECONFIG=/etc/kubernetes/admin.conf >>/etc/profile.d/k8s.sh",
+		"systemctl start docker",
+		"kubeadm config images pull",
+	)
+	if err != nil {
+		return err
+	}
+
+	imgs := strings.Split(string(assets.MustAsset("addon-images")), " ")
+	for _, img := range imgs {
+		if img == "" {
+			continue
+		}
+		if _, err := v.Run("docker pull " + img); err != nil {
+			return err
+		}
+	}
+
+	if _, err := v.Run("poweroff"); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func dialSSH(ctx context.Context, target string) (*ssh.Client, error) {

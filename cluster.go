@@ -69,6 +69,7 @@ func (c *ClusterConfig) Copy() *ClusterConfig {
 // Cluster is a virtual Kubernetes cluster.
 type Cluster struct {
 	cfg        *ClusterConfig
+	u          *Universe
 	tmpdir     string
 	kubeconfig string
 	client     *kubernetes.Clientset
@@ -130,6 +131,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 
 	ret := &Cluster{
 		cfg:    cfg,
+		u:      u,
 		tmpdir: p,
 	}
 
@@ -137,7 +139,6 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 
 	controllerCfg := cfg.VMConfig.Copy()
 	controllerCfg.Hostname = fmt.Sprintf("cluster%d-controller", clusterID)
-	controllerCfg.BootScript = assets.MustAsset("controller.sh")
 	controllerCfg.PortForwards[30000] = true
 	controllerCfg.PortForwards[6443] = true
 	ret.controller, err = u.NewVM(controllerCfg)
@@ -148,7 +149,6 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	for i := 0; i < cfg.NumNodes; i++ {
 		nodeCfg := cfg.VMConfig.Copy()
 		nodeCfg.Hostname = fmt.Sprintf("cluster%d-node%d", clusterID, i+1)
-		nodeCfg.BootScript = assets.MustAsset("node.sh")
 		node, err := u.NewVM(nodeCfg)
 		if err != nil {
 			return nil, err
@@ -170,55 +170,18 @@ func (c *Cluster) Start() error {
 	}
 	c.started = true
 
-	bs, err := assembleAddons(c.cfg.NetworkAddon, c.cfg.ExtraAddons)
-	if err != nil {
-		return err
-	}
-	if err := ioutil.WriteFile(filepath.Join(c.controller.Dir(), "addons.yaml"), bs, 0644); err != nil {
+	if err := c.startController(); err != nil {
 		return err
 	}
 
-	if err := c.controller.Start(); err != nil {
-		return err
-	}
 	for _, node := range c.nodes {
-		if err := node.Start(); err != nil {
+		// TODO: scatter-gather startup
+		if err := c.startNode(node); err != nil {
 			return err
 		}
 	}
 
-	return nil
-}
-
-// WaitReady waits until the Kubernetes cluster is ready to use. A
-// Cluster is ready when all configured nodes are in the cluster and
-// in the "Ready" state, and all deployments and daemonsets have all
-// replicas available.
-func (c *Cluster) WaitReady(ctx context.Context) error {
-	if err := c.controller.WaitReady(ctx); err != nil {
-		return err
-	}
-	for _, node := range c.nodes {
-		if err := node.WaitReady(ctx); err != nil {
-			return err
-		}
-	}
-
-	if err := adjustKubeconfig(filepath.Join(c.controller.Dir(), "kubeconfig"), c.Kubeconfig(), c.controller.ForwardedPort(6443)); err != nil {
-		return err
-	}
-
-	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
-	if err != nil {
-		return err
-	}
-
-	c.client, err = kubernetes.NewForConfig(config)
-	if err != nil {
-		return err
-	}
-
-	err = waitFor(ctx, func() (bool, error) {
+	err := waitFor(c.u.Context(), func() (bool, error) {
 		nodes, err := c.client.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
 			return false, err
@@ -256,6 +219,104 @@ func (c *Cluster) WaitReady(ctx context.Context) error {
 		return true, nil
 	})
 	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+var addrRe = regexp.MustCompile("https://.*:6443")
+
+func (c *Cluster) startController() error {
+	addons, err := assembleAddons(c.cfg.NetworkAddon, c.cfg.ExtraAddons)
+	if err != nil {
+		return err
+	}
+
+	if err := c.controller.Start(); err != nil {
+		return err
+	}
+
+	controllerConfig := fmt.Sprintf(`
+apiVersion: kubeadm.k8s.io/v1alpha3
+kind: InitConfiguration
+bootstrapTokens:
+- token: "000000.0000000000000000"
+  ttl: "24h"
+apiEndpoint:
+  advertiseAddress: %s
+nodeRegistration:
+  kubeletExtraArgs:
+    node-ip: %s
+---
+apiVersion: kubeadm.k8s.io/v1alpha3
+kind: ClusterConfiguration
+networking:
+  podSubnet: "10.42.0.0/16"
+kubernetesVersion: "1.12.3"
+clusterName: "virtuakube"
+apiServerCertSANs:
+- "127.0.0.1"
+`, c.controller.IPv4(), c.controller.IPv4())
+	if err := c.controller.WriteFile("/tmp/k8s.conf", []byte(controllerConfig)); err != nil {
+		return err
+	}
+	if err := c.controller.WriteFile("/tmp/addons.yaml", addons); err != nil {
+		return err
+	}
+
+	err = c.controller.RunMultiple(
+		"kubeadm init --config=/tmp/k8s.conf",
+		"KUBECONFIG=/etc/kubernetes/admin.conf kubectl taint nodes --all node-role.kubernetes.io/master-",
+		"KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /tmp/addons.yaml",
+	)
+	if err != nil {
+		return err
+	}
+
+	kubeconfig, err := c.controller.ReadFile("/etc/kubernetes/admin.conf")
+	if err != nil {
+		return err
+	}
+	kubeconfig = addrRe.ReplaceAll(kubeconfig, []byte("https://127.0.0.1:"+strconv.Itoa(c.controller.ForwardedPort(6443))))
+	if err := ioutil.WriteFile(c.Kubeconfig(), kubeconfig, 0600); err != nil {
+		return err
+	}
+
+	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
+	if err != nil {
+		return err
+	}
+
+	c.client, err = kubernetes.NewForConfig(config)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Cluster) startNode(node *VM) error {
+	if err := node.Start(); err != nil {
+		return err
+	}
+
+	nodeConfig := fmt.Sprintf(`
+apiVersion: kubeadm.k8s.io/v1alpha3
+kind: JoinConfiguration
+token: "000000.0000000000000000"
+discoveryTokenUnsafeSkipCAVerification: true
+discoveryTokenAPIServers:
+- %s:6443
+nodeRegistration:
+  kubeletExtraArgs:
+    node-ip: %s
+`, c.controller.IPv4(), node.IPv4())
+	if err := node.WriteFile("/tmp/k8s.conf", []byte(nodeConfig)); err != nil {
+		return err
+	}
+
+	if _, err := node.Run("kubeadm join --config=/tmp/k8s.conf"); err != nil {
 		return err
 	}
 
@@ -321,19 +382,6 @@ func assembleAddons(networkAddon string, extraAddons []string) ([]byte, error) {
 	return bytes.Join(out, []byte("\n---\n")), nil
 }
 
-var addrRe = regexp.MustCompile("https://.*:6443")
-
-func adjustKubeconfig(src, dst string, localPort int) error {
-	bs, err := ioutil.ReadFile(src)
-	if err != nil {
-		return err
-	}
-
-	rep := addrRe.ReplaceAll(bs, []byte("https://127.0.0.1:"+strconv.Itoa(localPort)))
-
-	return ioutil.WriteFile(dst, rep, 0644)
-}
-
 func nodeReady(node corev1.Node) bool {
 	for _, cond := range node.Status.Conditions {
 		if cond.Type != corev1.NodeReady {
@@ -346,17 +394,6 @@ func nodeReady(node corev1.Node) bool {
 	}
 
 	return false
-}
-
-func copyFile(src, dst string) error {
-	bs, err := ioutil.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	if err := ioutil.WriteFile(dst, bs, 0644); err != nil {
-		return err
-	}
-	return nil
 }
 
 func waitFor(ctx context.Context, test func() (bool, error)) error {

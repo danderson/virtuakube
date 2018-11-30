@@ -27,6 +27,7 @@ func main() {
 }
 
 func run() error {
+	start := time.Now()
 	universe, err := virtuakube.New(context.Background())
 	if err != nil {
 		return fmt.Errorf("Creating universe: %v", err)
@@ -46,12 +47,12 @@ func run() error {
 	cluster, err := universe.NewCluster(&virtuakube.ClusterConfig{
 		NumNodes: 1,
 		VMConfig: &virtuakube.VMConfig{
-			BackingImagePath: *baseImg,
-			MemoryMiB:        *memory,
-			Display:          *display,
+			Image:     *baseImg,
+			MemoryMiB: *memory,
 			PortForwards: map[int]bool{
 				22: true,
 			},
+			CommandLog: os.Stdout,
 		},
 		NetworkAddon: *networkAddon,
 	})
@@ -63,27 +64,16 @@ func run() error {
 		return fmt.Errorf("Starting cluster: %v", err)
 	}
 
-	fmt.Printf(`Cluster is starting up. SSH ports for debugging (password is "root"):
+	fmt.Printf(`Cluster is up, took %s. To talk to Kubernetes:
+
+export KUBECONFIG=%s
+
+SSH ports for debugging (password is "root"):
 
 controller: ssh -p%d root@localhost
       node: ssh -p%d root@localhost
 
-Waiting for cluster to come up...
-`, cluster.Controller().ForwardedPort(22), cluster.Nodes()[0].ForwardedPort(22))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	if err := cluster.WaitReady(ctx); err != nil {
-		return fmt.Errorf("Waiting for cluster to be ready: %v", err)
-	}
-
-	fmt.Printf(`
-Cluster is running. To talk to Kubernetes:
-
-export KUBECONFIG=%s
-
-Hit ctrl+C to shut down.
-`, cluster.Kubeconfig())
+`, time.Since(start), cluster.Kubeconfig(), cluster.Controller().ForwardedPort(22), cluster.Nodes()[0].ForwardedPort(22))
 
 	if err := universe.Wait(context.Background()); err != nil {
 		return fmt.Errorf("Waiting for universe to end: %v", err)

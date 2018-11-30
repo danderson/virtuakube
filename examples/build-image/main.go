@@ -16,13 +16,11 @@ func main() {
 	}
 
 	cfg := &virtuakube.BuildConfig{
-		InstallScript: []byte(`echo "test script run"
-`),
 		OutputPath: filepath.Join(wd, "out.qcow2"),
 		TempDir:    wd,
-		Debug:      true,
+		BuildLog:   os.Stdout,
 	}
-	if err := virtuakube.BuildImage(context.Background(), cfg); err != nil {
+	if err := virtuakube.BuildK8sImage(context.Background(), cfg); err != nil {
 		log.Fatal(err)
 	}
 }

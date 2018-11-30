@@ -1,11 +1,12 @@
 package virtuakube
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 var incrVMID = make(chan int)
@@ -30,33 +33,36 @@ func init() {
 
 // VMConfig is the configuration for a virtual machine.
 type VMConfig struct {
-	// BackingImagePath is the base disk image for the VM.
-	BackingImagePath string
+	// Image is the path to the base disk image for the VM. By
+	// default, the image is treated as read-only and a temporary CoW
+	// overlay is used to run the VM.
+	Image string
+	// NoOverlay specifies that the VM should use Image as its disk
+	// image directly. Image will be modified by the running system.
+	NoOverlay bool
 	// Hostname to set on the VM
 	Hostname string
 	// Amount of RAM.
 	MemoryMiB int
-	// If true, create a window for the VM's display.
-	Display bool
 	// Ports to forward from localhost to the VM
 	PortForwards map[int]bool
-	// BootScriptPath is the path to a boot script that the VM should
-	// execute during boot. Alternatively, BootScript is a literal
-	// boot script to execute.
-	BootScriptPath string
-	BootScript     []byte
+	// If true, the VM terminating doesn't destroy the universe.
+	NonEssential bool
+	// If non-nil, log commands executed by vm.Run and friends, along
+	// with the output of the commands.
+	CommandLog io.Writer
 }
 
 // Copy returns a deep copy of the VM config.
 func (v *VMConfig) Copy() *VMConfig {
 	ret := &VMConfig{
-		BackingImagePath: v.BackingImagePath,
-		Hostname:         v.Hostname,
-		MemoryMiB:        v.MemoryMiB,
-		Display:          v.Display,
-		PortForwards:     make(map[int]bool),
-		BootScriptPath:   v.BootScriptPath,
-		BootScript:       v.BootScript,
+		Image:        v.Image,
+		NoOverlay:    v.NoOverlay,
+		Hostname:     v.Hostname,
+		MemoryMiB:    v.MemoryMiB,
+		PortForwards: make(map[int]bool),
+		NonEssential: v.NonEssential,
+		CommandLog:   v.CommandLog,
 	}
 	for fwd, v := range v.PortForwards {
 		ret.PortForwards[fwd] = v
@@ -68,17 +74,21 @@ func (v *VMConfig) Copy() *VMConfig {
 type VM struct {
 	cfg      *VMConfig
 	u        *Universe
-	hostPath string
 	diskPath string
 	mac      string
 	forwards map[int]int
 	ipv4     string
 	ipv6     string
+	ctx      context.Context
+	shutdown context.CancelFunc
 
-	cmd *exec.Cmd
+	cmd   *exec.Cmd
+	ssh   *ssh.Client
+	ready chan *ssh.Client
 
 	mu      sync.Mutex
 	started bool
+	closed  bool
 }
 
 func randomMAC() string {
@@ -94,34 +104,20 @@ func randomMAC() string {
 }
 
 func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
-	if cfg == nil || cfg.BackingImagePath == "" {
+	if cfg == nil || cfg.Image == "" {
 		return nil, errors.New("VMConfig with at least BackingImagePath is required")
 	}
 
 	cfg = cfg.Copy()
 
-	bp, err := filepath.Abs(cfg.BackingImagePath)
+	bp, err := filepath.Abs(cfg.Image)
 	if err != nil {
 		return nil, err
 	}
 	if _, err = os.Stat(bp); err != nil {
 		return nil, err
 	}
-	cfg.BackingImagePath = bp
-
-	if cfg.BootScriptPath != "" && cfg.BootScript != nil {
-		return nil, errors.New("cannot specify both BootScriptPath and BootScript")
-	}
-	if cfg.BootScriptPath != "" {
-		bp, err = filepath.Abs(cfg.BootScriptPath)
-		if err != nil {
-			return nil, err
-		}
-		if _, err = os.Stat(bp); err != nil {
-			return nil, err
-		}
-		cfg.BootScriptPath = bp
-	}
+	cfg.Image = bp
 
 	if cfg.Hostname == "" {
 		cfg.Hostname = "vm" + strconv.Itoa(<-incrVMID)
@@ -129,6 +125,8 @@ func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
 	if cfg.MemoryMiB == 0 {
 		cfg.MemoryMiB = 1024
 	}
+
+	cfg.PortForwards[22] = true
 
 	return cfg, nil
 }
@@ -153,40 +151,44 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		return nil, err
 	}
 
-	hostPath := filepath.Join(tmp, "hostfs")
-	if err = os.Mkdir(hostPath, 0700); err != nil {
-		return nil, err
+	diskPath := cfg.Image
+	if !cfg.NoOverlay {
+		diskPath = filepath.Join(tmp, "disk.qcow2")
+		disk := exec.Command(
+			"qemu-img",
+			"create",
+			"-f", "qcow2",
+			"-b", cfg.Image,
+			"-f", "qcow2",
+			diskPath,
+		)
+		out, err := disk.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("creating VM disk: %v\n%s", err, string(out))
+		}
 	}
-	diskPath := filepath.Join(tmp, "disk.qcow2")
-	disk := exec.Command(
-		"qemu-img",
-		"create",
-		"-f", "qcow2",
-		"-b", cfg.BackingImagePath,
-		"-f", "qcow2",
-		diskPath,
-	)
-	out, err := disk.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("creating VM disk: %v\n%s", err, string(out))
-	}
+
 	fwds := map[int]int{}
 	for fwd := range cfg.PortForwards {
 		fwds[fwd] = <-u.ports
 	}
 
+	ctx, cancel := context.WithCancel(u.Context())
+
 	ret := &VM{
 		cfg:      cfg,
 		u:        u,
-		hostPath: hostPath,
 		diskPath: diskPath,
 		mac:      randomMAC(),
 		forwards: fwds,
 		ipv4:     <-u.ipv4s,
 		ipv6:     <-u.ipv6s,
+		ctx:      ctx,
+		shutdown: cancel,
+		ready:    make(chan *ssh.Client),
 	}
 	ret.cmd = exec.CommandContext(
-		u.Context(),
+		ret.ctx,
 		"qemu-system-x86_64",
 		"-enable-kvm",
 		"-m", strconv.Itoa(ret.cfg.MemoryMiB),
@@ -195,26 +197,15 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		"-device", "virtio-rng-pci,rng=rng0",
 		"-device", "virtio-serial",
 		"-object", "rng-random,filename=/dev/urandom,id=rng0",
-		"-netdev", fmt.Sprintf("user,id=net0,hostname=%s,%s", ret.cfg.Hostname, makeForwards(ret.forwards)),
+		"-netdev", fmt.Sprintf("user,id=net0,%s", makeForwards(ret.forwards)),
 		"-netdev", fmt.Sprintf("vde,id=net1,sock=%s", u.switchSock()),
 		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", ret.diskPath),
-		"-virtfs", fmt.Sprintf("local,path=%s,mount_tag=host0,security_model=none,id=host0", ret.hostPath),
+		"-nographic",
+		"-serial", "null",
+		"-monitor", "none",
 	)
-	if !cfg.Display {
-		ret.cmd.Args = append(ret.cmd.Args,
-			"-nographic",
-			"-serial", "null",
-			"-monitor", "none",
-		)
-	}
 
 	return ret, nil
-}
-
-// Dir returns the path to the directory that is shared with the
-// running VM.
-func (v *VM) Dir() string {
-	return v.hostPath
 }
 
 // Start boots the virtual machine. The universe is destroyed if the
@@ -228,61 +219,123 @@ func (v *VM) Start() error {
 	}
 	v.started = true
 
-	ips := []string{v.ipv4, v.ipv6}
-	if err := ioutil.WriteFile(filepath.Join(v.Dir(), "ip"), []byte(strings.Join(ips, "\n")), 0644); err != nil {
-		return err
-	}
-
-	if v.cfg.BootScriptPath != "" {
-		bs, err := ioutil.ReadFile(v.cfg.BootScriptPath)
-		if err != nil {
-			return err
-		}
-		if err := ioutil.WriteFile(filepath.Join(v.Dir(), "bootscript.sh"), bs, 0755); err != nil {
-			return err
-		}
-	} else if v.cfg.BootScript != nil {
-		if err := ioutil.WriteFile(filepath.Join(v.Dir(), "bootscript.sh"), v.cfg.BootScript, 0755); err != nil {
-			return err
-		}
-	}
-
+	v.cmd.Stdout = os.Stdout
+	v.cmd.Stderr = os.Stderr
 	if err := v.cmd.Start(); err != nil {
-		v.u.Close()
+		v.Close()
 		return err
 	}
 
-	// Destroy the universe if the VM exits.
 	go func() {
 		v.cmd.Wait()
 		// TODO: better logging and stuff
-		v.u.Close()
+		v.Close()
 	}()
+
+	// Try dialing SSH
+	for v.ctx.Err() == nil {
+		sshCfg := &ssh.ClientConfig{
+			User:            "root",
+			Auth:            []ssh.AuthMethod{ssh.Password("root")},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         time.Second,
+		}
+
+		client, err := ssh.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", v.ForwardedPort(22)), sshCfg)
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		v.ssh = client
+		break
+	}
+
+	err := v.RunMultiple(
+		"hostnamectl set-hostname "+v.cfg.Hostname,
+		fmt.Sprintf("ip addr add %s/24 dev ens4", v.ipv4),
+		fmt.Sprintf("ip addr add %s/24 dev ens4", v.ipv6),
+		"ip link set dev ens4 up",
+	)
+	if err != nil {
+		v.Close()
+		return err
+	}
 
 	return nil
 }
 
-// WaitReady waits until the VM's bootscript creates the boot-done
-// file in the shared host directory.
-func (v *VM) WaitReady(ctx context.Context) error {
-	stop := ctx.Done()
-	for {
-		select {
-		case <-stop:
-			return errors.New("timeout")
-		default:
-		}
+func (v *VM) Run(command string) ([]byte, error) {
+	sess, err := v.ssh.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+	var out bytes.Buffer
+	sess.Stdout = &out
+	sess.Stderr = &out
+	if v.cfg.CommandLog != nil {
+		sess.Stdout = io.MultiWriter(&out, v.cfg.CommandLog)
+		sess.Stderr = sess.Stdout
+		fmt.Fprintln(v.cfg.CommandLog, "+ "+command)
+	}
 
-		_, err := os.Stat(filepath.Join(v.Dir(), "boot-done"))
-		if err != nil {
-			if os.IsNotExist(err) {
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
+	if err := sess.Run(command); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func (v *VM) RunMultiple(commands ...string) error {
+	for _, cmd := range commands {
+		if _, err := v.Run(cmd); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (v *VM) WriteFile(path string, bs []byte) error {
+	sess, err := v.ssh.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	sess.Stdin = bytes.NewBuffer(bs)
+	if v.cfg.CommandLog != nil {
+		fmt.Fprintf(v.cfg.CommandLog, "+ (write file %s)\n", path)
+	}
+
+	return sess.Run("cat >" + path)
+}
+
+func (v *VM) ReadFile(path string) ([]byte, error) {
+	sess, err := v.ssh.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+	if v.cfg.CommandLog != nil {
+		fmt.Fprintf(v.cfg.CommandLog, "+ (read file %s)\n", path)
+	}
+	return sess.Output("cat " + path)
+}
+
+func (v *VM) Close() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.closed {
 		return nil
 	}
+	v.closed = true
+
+	v.shutdown()
+
+	if !v.cfg.NonEssential {
+		v.u.Close()
+	}
+
+	return nil
 }
 
 // ForwardedPort returns the port on localhost that maps to the given
