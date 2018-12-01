@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +52,9 @@ type VMConfig struct {
 	// If non-nil, log commands executed by vm.Run and friends, along
 	// with the output of the commands.
 	CommandLog io.Writer
+	// If true, use pure software emulation without hardware
+	// acceleration.
+	NoKVM bool
 }
 
 // Copy returns a deep copy of the VM config.
@@ -63,6 +67,7 @@ func (v *VMConfig) Copy() *VMConfig {
 		PortForwards: make(map[int]bool),
 		NonEssential: v.NonEssential,
 		CommandLog:   v.CommandLog,
+		NoKVM:        v.NoKVM,
 	}
 	for fwd, v := range v.PortForwards {
 		ret.PortForwards[fwd] = v
@@ -168,8 +173,13 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		}
 	}
 
-	fwds := map[int]int{}
+	wantPorts := []int{}
 	for fwd := range cfg.PortForwards {
+		wantPorts = append(wantPorts, fwd)
+	}
+	sort.Ints(wantPorts)
+	fwds := map[int]int{}
+	for _, fwd := range wantPorts {
 		fwds[fwd] = <-u.ports
 	}
 
@@ -204,6 +214,9 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		"-serial", "null",
 		"-monitor", "none",
 	)
+	if !cfg.NoKVM {
+		ret.cmd.Args = append(ret.cmd.Args, "-enable-kvm")
+	}
 
 	return ret, nil
 }

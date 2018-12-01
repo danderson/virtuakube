@@ -75,6 +75,7 @@ type BuildConfig struct {
 	OutputPath string
 	TempDir    string
 	BuildLog   io.Writer
+	NoKVM      bool
 }
 
 func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
@@ -161,7 +162,6 @@ func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
 	cmd = exec.CommandContext(
 		vmCtx,
 		"qemu-system-x86_64",
-		"-enable-kvm",
 		"-m", "2048",
 		"-device", "virtio-net,netdev=net0,mac=52:54:00:12:34:56",
 		"-device", "virtio-rng-pci,rng=rng0",
@@ -175,6 +175,9 @@ func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
 		"-serial", "null",
 		"-monitor", "none",
 	)
+	if !cfg.NoKVM {
+		cmd.Args = append(cmd.Args, "-enable-kvm")
+	}
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Start(); err != nil {
