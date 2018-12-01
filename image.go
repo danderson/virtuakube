@@ -56,6 +56,7 @@ EOF
 
 cat >/etc/fstab <<EOF
 /dev/vda1 / ext4 rw,relatime 0 1
+bpffs /sys/fs/bpf bpf rw,relatime 0 1
 EOF
 
 update-initramfs -u

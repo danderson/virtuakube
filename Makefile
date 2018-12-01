@@ -8,6 +8,11 @@ update-addons:
 	perl -pi -e 's#192.168.0.0/16#10.32.0.0/12#g' internal/assets/net/calico.yaml
 # Weave
 	curl -L 'https://cloud.weave.works/k8s/net?k8s-version=1.12' >internal/assets/net/weave.yaml
+# Flannel
+	curl -L https://raw.githubusercontent.com/coreos/flannel/bc79dd1505b0c8681ece4de4c0d86c5cd2643275/Documentation/kube-flannel.yml >internal/assets/net/flannel.yaml
+	perl -pi -e 's#10.244.0.0/16#10.32.0.0/12#g' internal/assets/net/flannel.yaml
+# TODO: cilium, need to figure out the etcd operator nonsense
+# TODO: romana, it's currently broken on k8s 1.12
 
 	grep -h "image:" internal/assets/*.yaml internal/assets/net/*.yaml | cut -f2- -d: | tr -d "'\" " | tr '\n' ' ' >internal/assets/addon-images
 	+make update-assets
