@@ -49,13 +49,11 @@ func run() error {
 	cluster, err := universe.NewCluster(&virtuakube.ClusterConfig{
 		NumNodes: *nodes,
 		VMConfig: &virtuakube.VMConfig{
-			Image:     *baseImg,
-			MemoryMiB: *memory,
-			PortForwards: map[int]bool{
-				22: true,
-			},
-			CommandLog: os.Stdout,
-			NoKVM:      !*kvm,
+			Image:        *baseImg,
+			MemoryMiB:    *memory,
+			PortForwards: map[int]bool{22: true},
+			CommandLog:   os.Stdout,
+			NoKVM:        !*kvm,
 		},
 		NetworkAddon: *networkAddon,
 	})
@@ -75,8 +73,8 @@ SSH ports for debugging (password is "root"):
 
 controller: ssh -p%d root@localhost
 `, time.Since(start), cluster.Kubeconfig(), cluster.Controller().ForwardedPort(22))
-	for _, vm := range cluster.Nodes() {
-		fmt.Printf("      node: ssh -p%d root@localhost", vm.ForwardedPort(22))
+	for i, vm := range cluster.Nodes() {
+		fmt.Printf("node %d: ssh -p%d root@localhost\n", i+1, vm.ForwardedPort(22))
 	}
 	fmt.Println("")
 

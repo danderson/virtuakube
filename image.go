@@ -26,7 +26,7 @@ var buildTools = []string{
 
 const (
 	dockerfile = `
-FROM debian:buster
+FROM debian:stretch
 RUN apt-get -y update
 RUN DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
   dbus \
@@ -273,7 +273,7 @@ func BuildK8sImage(ctx context.Context, cfg *BuildConfig) error {
 	}
 
 	repos := []byte(`
-deb [arch=amd64] https://download.docker.com/linux/debian buster stable
+deb [arch=amd64] https://download.docker.com/linux/debian stretch stable
 deb http://apt.kubernetes.io/ kubernetes-xenial main
 `)
 	if err := v.WriteFile("/etc/apt/sources.list.d/k8s.list", repos); err != nil {
