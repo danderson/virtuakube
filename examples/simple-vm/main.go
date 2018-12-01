@@ -14,6 +14,7 @@ var (
 	baseImg = flag.String("vm-img", "virtuakube.qcow2", "VM base image")
 	memory  = flag.Int("memory", 1024, "amount of memory per VM, in MiB")
 	display = flag.Bool("display", false, "create display windows for each VM")
+	kvm     = flag.Bool("kvm", true, "use KVM hardware acceleration")
 )
 
 func main() {
@@ -46,6 +47,7 @@ func run() error {
 		MemoryMiB:    *memory,
 		PortForwards: map[int]bool{22: true},
 		CommandLog:   os.Stdout,
+		NoKVM:        !*kvm,
 	})
 	if err != nil {
 		return fmt.Errorf("Creating VM: %v", err)

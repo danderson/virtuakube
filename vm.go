@@ -200,7 +200,6 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	ret.cmd = exec.CommandContext(
 		ret.ctx,
 		"qemu-system-x86_64",
-		"-enable-kvm",
 		"-m", strconv.Itoa(ret.cfg.MemoryMiB),
 		"-device", "virtio-net,netdev=net0,mac=52:54:00:12:34:56",
 		"-device", fmt.Sprintf("virtio-net,netdev=net1,mac=%s", ret.mac),

@@ -67,7 +67,7 @@ update-grub2
 rm /etc/machine-id /var/lib/dbus/machine-id
 touch /etc/machine-id
 chattr +i /etc/machine-id
-poweroff
+sync
 `
 )
 
@@ -217,6 +217,13 @@ func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
 		return fmt.Errorf("running setup script: %v", err)
 	}
 
+	sess, err = client.NewSession()
+	if err != nil {
+		return fmt.Errorf("creating SSH session: %v", err)
+	}
+	defer sess.Close()
+	sess.Run("poweroff")
+
 	// Wait for qemu to terminate, since the script invoked `poweroff`.
 	<-vmCtx.Done()
 
@@ -274,6 +281,7 @@ deb http://apt.kubernetes.io/ kubernetes-xenial main
 	}
 
 	pkgs := []string{
+		"apt-transport-https",
 		"curl",
 		"ebtables",
 		"ethtool",
@@ -311,13 +319,10 @@ deb http://apt.kubernetes.io/ kubernetes-xenial main
 		}
 	}
 
-	err = v.RunMultiple(
-		"sync",
-		"poweroff",
-	)
-	if err != nil {
+	if _, err = v.Run("sync"); err != nil {
 		return err
 	}
+	v.Run("poweroff")
 
 	return nil
 }

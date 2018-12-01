@@ -14,8 +14,10 @@ import (
 var (
 	baseImg      = flag.String("vm-img", "virtuakube.qcow2", "VM base image")
 	memory       = flag.Int("memory", 1024, "amount of memory per VM, in MiB")
+	nodes        = flag.Int("nodes", 1, "number of worker nodes in addition to master")
 	display      = flag.Bool("display", false, "create display windows for each VM")
 	networkAddon = flag.String("network-addon", "calico", "network addon to install")
+	kvm          = flag.Bool("kvm", true, "use KVM hardware acceleration")
 )
 
 func main() {
@@ -45,7 +47,7 @@ func run() error {
 	}()
 
 	cluster, err := universe.NewCluster(&virtuakube.ClusterConfig{
-		NumNodes: 1,
+		NumNodes: *nodes,
 		VMConfig: &virtuakube.VMConfig{
 			Image:     *baseImg,
 			MemoryMiB: *memory,
@@ -53,6 +55,7 @@ func run() error {
 				22: true,
 			},
 			CommandLog: os.Stdout,
+			NoKVM:      !*kvm,
 		},
 		NetworkAddon: *networkAddon,
 	})
@@ -71,9 +74,11 @@ export KUBECONFIG=%s
 SSH ports for debugging (password is "root"):
 
 controller: ssh -p%d root@localhost
-      node: ssh -p%d root@localhost
-
-`, time.Since(start), cluster.Kubeconfig(), cluster.Controller().ForwardedPort(22), cluster.Nodes()[0].ForwardedPort(22))
+`, time.Since(start), cluster.Kubeconfig(), cluster.Controller().ForwardedPort(22))
+	for _, vm := range cluster.Nodes() {
+		fmt.Printf("      node: ssh -p%d root@localhost", vm.ForwardedPort(22))
+	}
+	fmt.Println("")
 
 	if err := universe.Wait(context.Background()); err != nil {
 		return fmt.Errorf("Waiting for universe to end: %v", err)

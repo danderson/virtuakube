@@ -85,10 +85,6 @@ type Cluster struct {
 func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
 	cfg = cfg.Copy()
 
-	if cfg.NumNodes != 1 {
-		return nil, errors.New("clusters with >1 node not supported yet")
-	}
-
 	if cfg.VMConfig == nil {
 		return nil, errors.New("missing VMConfig")
 	}
@@ -253,7 +249,7 @@ nodeRegistration:
 apiVersion: kubeadm.k8s.io/v1alpha3
 kind: ClusterConfiguration
 networking:
-  podSubnet: "192.168.0.0/16"
+  podSubnet: "10.32.0.0/12"
 kubernetesVersion: "1.12.3"
 clusterName: "virtuakube"
 apiServerCertSANs:

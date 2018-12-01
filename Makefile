@@ -5,6 +5,7 @@ update-addons:
 	curl https://docs.projectcalico.org/v3.3/getting-started/kubernetes/installation/hosted/rbac-kdd.yaml >internal/assets/net/calico.yaml
 	echo "---" >>internal/assets/net/calico.yaml
 	curl https://docs.projectcalico.org/v3.3/getting-started/kubernetes/installation/hosted/kubernetes-datastore/calico-networking/1.7/calico.yaml >>internal/assets/net/calico.yaml
+	perl -pi -e 's#192.168.0.0/16#10.32.0.0/12#g' internal/assets/net/calico.yaml
 # Weave
 	curl -L 'https://cloud.weave.works/k8s/net?k8s-version=1.12' >internal/assets/net/weave.yaml
 
