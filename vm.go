@@ -55,6 +55,11 @@ type VMConfig struct {
 	// If true, use pure software emulation without hardware
 	// acceleration.
 	NoKVM bool
+
+	// Only available to image builder.
+	kernelPath string
+	initrdPath string
+	cmdline    string
 }
 
 // Copy returns a deep copy of the VM config.
@@ -68,6 +73,9 @@ func (v *VMConfig) Copy() *VMConfig {
 		NonEssential: v.NonEssential,
 		CommandLog:   v.CommandLog,
 		NoKVM:        v.NoKVM,
+		kernelPath:   v.kernelPath,
+		initrdPath:   v.initrdPath,
+		cmdline:      v.cmdline,
 	}
 	for fwd, v := range v.PortForwards {
 		ret.PortForwards[fwd] = v
@@ -215,6 +223,9 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	)
 	if !cfg.NoKVM {
 		ret.cmd.Args = append(ret.cmd.Args, "-enable-kvm")
+	}
+	if cfg.kernelPath != "" {
+		ret.cmd.Args = append(ret.cmd.Args, "-kernel", cfg.kernelPath, "-initrd", cfg.initrdPath, "-append", cfg.cmdline)
 	}
 
 	return ret, nil

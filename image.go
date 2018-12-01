@@ -1,7 +1,6 @@
 package virtuakube
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,9 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"go.universe.tf/virtuakube/internal/assets"
 )
@@ -29,17 +25,30 @@ const (
 FROM debian:stretch
 RUN apt-get -y update
 RUN DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
+  ca-certificates \
   dbus \
+  grub2 \
   ifupdown \
   isc-dhcp-client \
   isc-dhcp-common \
   linux-image-amd64 \
   openssh-server \
   systemd-sysv
+RUN DEBIAN_FRONTEND=noninteractive apt-get -y upgrade --no-install-recommends
 RUN echo "root:root" | chpasswd
 RUN echo "PermitRootLogin yes" >>/etc/ssh/sshd_config
 RUN echo "auto ens3\niface ens3 inet dhcp" >/etc/network/interfaces
 RUN echo "supersede domain-name-servers 8.8.8.8;" >>/etc/dhcp/dhclient.conf
+`
+
+	hosts = `
+127.0.0.1 localhost
+::1 localhost
+`
+
+	fstab = `
+/dev/vda1 / ext4 rw,relatime 0 1
+bpffs /sys/fs/bpf bpf rw,relatime 0 0
 `
 
 	setupScript = `
@@ -72,14 +81,17 @@ sync
 `
 )
 
+type BuildCustomizeFunc func(*VM) error
+
 type BuildConfig struct {
-	OutputPath string
-	TempDir    string
-	BuildLog   io.Writer
-	NoKVM      bool
+	OutputPath     string
+	TempDir        string
+	CustomizeFuncs []BuildCustomizeFunc
+	BuildLog       io.Writer
+	NoKVM          bool
 }
 
-func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
+func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	if err := checkTools(buildTools); err != nil {
 		return err
 	}
@@ -158,75 +170,65 @@ func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
 		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	vmCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	cmd = exec.CommandContext(
-		vmCtx,
-		"qemu-system-x86_64",
-		"-m", "2048",
-		"-device", "virtio-net,netdev=net0,mac=52:54:00:12:34:56",
-		"-device", "virtio-rng-pci,rng=rng0",
-		"-object", "rng-random,filename=/dev/urandom,id=rng0",
-		"-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:50000-:22",
-		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", imgPath),
-		"-kernel", filepath.Join(tmp, "vmlinuz"),
-		"-initrd", filepath.Join(tmp, "initrd.img"),
-		"-append", "root=/dev/vda1 rw",
-		"-nographic",
-		"-serial", "null",
-		"-monitor", "none",
+	u, err := New(ctx)
+	if err != nil {
+		return fmt.Errorf("creating virtuakube instance: %v", err)
+	}
+	defer u.Close()
+	v, err := u.NewVM(&VMConfig{
+		Image:      imgPath,
+		NoOverlay:  true,
+		MemoryMiB:  2048,
+		CommandLog: cfg.BuildLog,
+		NoKVM:      cfg.NoKVM,
+		kernelPath: filepath.Join(tmp, "vmlinuz"),
+		initrdPath: filepath.Join(tmp, "initrd.img"),
+		cmdline:    "root=/dev/vda1 rw",
+	})
+	if err != nil {
+		return fmt.Errorf("creating image VM: %v", err)
+	}
+	if err := v.Start(); err != nil {
+		return fmt.Errorf("starting image VM: %v", err)
+	}
+
+	if err := v.WriteFile("/etc/hosts", []byte(hosts)); err != nil {
+		return fmt.Errorf("install /etc/hosts: %v", err)
+	}
+
+	if err := v.WriteFile("/etc/fstab", []byte(fstab)); err != nil {
+		return fmt.Errorf("install /etc/fstab: %v", err)
+	}
+
+	err = v.RunMultiple(
+		"update-initramfs -u",
+
+		"grub-install /dev/vda",
+		"perl -pi -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub",
+		"update-grub2",
+
+		"rm /etc/machine-id /var/lib/dbus/machine-id",
+		"touch /etc/machine-id",
+		"chattr +i /etc/machine-id",
 	)
-	if !cfg.NoKVM {
-		cmd.Args = append(cmd.Args, "-enable-kvm")
-	}
-	cmd.Stdout = cfg.BuildLog
-	cmd.Stderr = cfg.BuildLog
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting build VM: %v", err)
-	}
-	go func() {
-		cmd.Wait()
-		cancel()
-	}()
-
-	client, err := dialSSH(vmCtx, "127.0.0.1:50000")
 	if err != nil {
-		return fmt.Errorf("connecting to VM with SSH: %v", err)
-	}
-	defer client.Close()
-
-	sess, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("creating SSH session: %v", err)
-	}
-	defer sess.Close()
-	sess.Stdout = cfg.BuildLog
-	sess.Stderr = cfg.BuildLog
-	sess.Stdin = bytes.NewBuffer([]byte(setupScript))
-	if err := sess.Run("cat >/tmp/install.sh"); err != nil {
-		return fmt.Errorf("copying setup script: %v", err)
+		return fmt.Errorf("finalize base image configuration: %v", err)
 	}
 
-	sess, err = client.NewSession()
-	if err != nil {
-		return fmt.Errorf("creating SSH session: %v", err)
-	}
-	defer sess.Close()
-	sess.Stdout = cfg.BuildLog
-	sess.Stderr = cfg.BuildLog
-	if err := sess.Run("bash /tmp/install.sh"); err != nil {
-		return fmt.Errorf("running setup script: %v", err)
+	for _, f := range cfg.CustomizeFuncs {
+		if err = f(v); err != nil {
+			return fmt.Errorf("applying customize func: %v", err)
+		}
 	}
 
-	sess, err = client.NewSession()
-	if err != nil {
-		return fmt.Errorf("creating SSH session: %v", err)
+	if _, err := v.Run("sync"); err != nil {
+		return fmt.Errorf("syncing image disk: %v", err)
 	}
-	defer sess.Close()
-	sess.Run("poweroff")
 
-	// Wait for qemu to terminate, since the script invoked `poweroff`.
-	<-vmCtx.Done()
+	// Shut down the VM. Shutdown triggers destruction of the
+	// universe, so we can wait for the context to get canceled.
+	v.Run("poweroff")
+	<-u.Context().Done()
 
 	cmd = exec.CommandContext(
 		ctx,
@@ -243,36 +245,7 @@ func BuildBaseImage(ctx context.Context, cfg *BuildConfig) error {
 	return nil
 }
 
-func BuildK8sImage(ctx context.Context, cfg *BuildConfig) error {
-	if err := checkTools(buildTools); err != nil {
-		return err
-	}
-
-	if err := BuildBaseImage(ctx, cfg); err != nil {
-		return err
-	}
-
-	u, err := New(ctx)
-	if err != nil {
-		return err
-	}
-	defer u.Close()
-
-	v, err := u.NewVM(&VMConfig{
-		Image:      cfg.OutputPath,
-		NoOverlay:  true,
-		MemoryMiB:  2048,
-		CommandLog: cfg.BuildLog,
-	})
-	if err != nil {
-		return err
-	}
-	defer v.Close()
-
-	if err := v.Start(); err != nil {
-		return err
-	}
-
+func CustomizeInstallK8s(v *VM) error {
 	repos := []byte(`
 deb [arch=amd64] https://download.docker.com/linux/debian stretch stable
 deb http://apt.kubernetes.io/ kubernetes-xenial main
@@ -295,7 +268,7 @@ deb http://apt.kubernetes.io/ kubernetes-xenial main
 		"kubeadm",
 		"kubectl",
 	}
-	err = v.RunMultiple(
+	err := v.RunMultiple(
 		"DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends "+strings.Join(pkgs, " "),
 		"curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add -",
 		"curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -",
@@ -303,6 +276,16 @@ deb http://apt.kubernetes.io/ kubernetes-xenial main
 		"DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends "+strings.Join(k8sPkgs, " "),
 		"echo br_netfilter >>/etc/modules",
 		"echo export KUBECONFIG=/etc/kubernetes/admin.conf >>/etc/profile.d/k8s.sh",
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func CustomizePreloadK8sImages(v *VM) error {
+	err := v.RunMultiple(
 		"systemctl start docker",
 		"kubeadm config images pull",
 	)
@@ -320,33 +303,5 @@ deb http://apt.kubernetes.io/ kubernetes-xenial main
 		}
 	}
 
-	if _, err = v.Run("sync"); err != nil {
-		return err
-	}
-	v.Run("poweroff")
-
 	return nil
-}
-
-func dialSSH(ctx context.Context, target string) (*ssh.Client, error) {
-	sshCfg := &ssh.ClientConfig{
-		User:            "root",
-		Auth:            []ssh.AuthMethod{ssh.Password("root")},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         time.Second,
-	}
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-
-	for ctx.Err() == nil {
-		client, err := ssh.Dial("tcp", target, sshCfg)
-		if err != nil {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		return client, nil
-	}
-
-	return nil, ctx.Err()
 }

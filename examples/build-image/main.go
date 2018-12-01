@@ -25,10 +25,14 @@ func main() {
 	cfg := &virtuakube.BuildConfig{
 		OutputPath: filepath.Join(wd, "out.qcow2"),
 		TempDir:    wd,
-		BuildLog:   os.Stdout,
-		NoKVM:      !*kvm,
+		CustomizeFuncs: []virtuakube.BuildCustomizeFunc{
+			virtuakube.CustomizeInstallK8s,
+			virtuakube.CustomizePreloadK8sImages,
+		},
+		BuildLog: os.Stdout,
+		NoKVM:    !*kvm,
 	}
-	if err := virtuakube.BuildK8sImage(context.Background(), cfg); err != nil {
+	if err := virtuakube.BuildImage(context.Background(), cfg); err != nil {
 		log.Fatal(err)
 	}
 }
