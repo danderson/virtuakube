@@ -62,16 +62,16 @@ type Universe struct {
 // New creates a new virtual universe. The ctx controls the overall
 // lifetime of the universe, i.e. if the context is canceled or times
 // out, the universe will be destroyed.
-func New(ctx context.Context) (*Universe, error) {
+func New(ctx context.Context, tmpdir string) (*Universe, error) {
 	cfg := &universeFreezeConfig{
 		NextPort: 50000,
 		NextIPv4: net.ParseIP("172.20.0.1"),
 		NextIPv6: net.ParseIP("fd00::1"),
 	}
-	return mkUniverse(ctx, cfg)
+	return mkUniverse(ctx, cfg, tmpdir)
 }
 
-func Thaw(ctx context.Context, freezeDir string) (*Universe, error) {
+func Thaw(ctx context.Context, freezeDir, tmpdir string) (*Universe, error) {
 	bs, err := ioutil.ReadFile(filepath.Join(freezeDir, "_universe.json"))
 	if err != nil {
 		return nil, err
@@ -82,7 +82,7 @@ func Thaw(ctx context.Context, freezeDir string) (*Universe, error) {
 		return nil, err
 	}
 
-	u, err := mkUniverse(ctx, &cfg)
+	u, err := mkUniverse(ctx, &cfg, tmpdir)
 	if err != nil {
 		return nil, err
 	}
@@ -103,17 +103,21 @@ func Thaw(ctx context.Context, freezeDir string) (*Universe, error) {
 		}
 	}
 
-	// TODO: restore clusters
+	for _, name := range cfg.Clusters {
+		if _, err := u.thawCluster(freezeDir, name); err != nil {
+			return nil, fmt.Errorf("thawing cluster %q: %v", name, err)
+		}
+	}
 
 	return u, nil
 }
 
-func mkUniverse(ctx context.Context, cfg *universeFreezeConfig) (*Universe, error) {
+func mkUniverse(ctx context.Context, cfg *universeFreezeConfig, tmpdir string) (*Universe, error) {
 	if err := checkTools(universeTools); err != nil {
 		return nil, err
 	}
 
-	p, err := ioutil.TempDir("", "virtuakube")
+	p, err := ioutil.TempDir(tmpdir, "virtuakube")
 	if err != nil {
 		return nil, err
 	}

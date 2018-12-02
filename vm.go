@@ -74,10 +74,11 @@ func (v *VMConfig) Copy() *VMConfig {
 }
 
 type vmFreezeConfig struct {
-	Config *VMConfig
-	MAC    string
-	IPv4   net.IP
-	IPv6   net.IP
+	Config       *VMConfig
+	MAC          string
+	PortForwards map[int]int
+	IPv4         net.IP
+	IPv6         net.IP
 }
 
 // VM is a virtual machine.
@@ -164,16 +165,6 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, diskPath string, resume bool) (*VM,
 		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Config.Hostname)
 	}
 
-	wantPorts := []int{}
-	for fwd := range cfg.Config.PortForwards {
-		wantPorts = append(wantPorts, fwd)
-	}
-	sort.Ints(wantPorts)
-	fwds := map[int]int{}
-	for _, fwd := range wantPorts {
-		fwds[fwd] = u.port()
-	}
-
 	ctx, cancel := context.WithCancel(u.Context())
 
 	ret := &VM{
@@ -181,7 +172,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, diskPath string, resume bool) (*VM,
 		u:        u,
 		diskPath: diskPath,
 		mac:      cfg.MAC,
-		forwards: fwds,
+		forwards: cfg.PortForwards,
 		ipv4:     cfg.IPv4,
 		ipv6:     cfg.IPv6,
 		ctx:      ctx,
@@ -200,8 +191,8 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, diskPath string, resume bool) (*VM,
 		"-netdev", fmt.Sprintf("user,id=net0,%s", makeForwards(ret.forwards)),
 		"-netdev", fmt.Sprintf("vde,id=net1,sock=%s", u.switchSock()),
 		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", ret.diskPath),
-		//"-nographic",
-		//"-serial", "null",
+		"-nographic",
+		"-serial", "null",
 		"-monitor", "stdio",
 	)
 	if !ret.cfg.NoKVM {
@@ -223,8 +214,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, diskPath string, resume bool) (*VM,
 		return nil, err
 	}
 	ret.monOut = monOut
-
-	fmt.Println(strings.Join(ret.cmd.Args, " "))
+	ret.cmd.Stderr = os.Stderr
 
 	u.vms[ret.cfg.Hostname] = ret
 
@@ -262,11 +252,22 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		}
 	}
 
+	wantPorts := []int{}
+	for fwd := range cfg.PortForwards {
+		wantPorts = append(wantPorts, fwd)
+	}
+	sort.Ints(wantPorts)
+	fwds := map[int]int{}
+	for _, fwd := range wantPorts {
+		fwds[fwd] = u.port()
+	}
+
 	fcfg := &vmFreezeConfig{
-		Config: cfg,
-		MAC:    randomMAC(),
-		IPv4:   u.ipv4(),
-		IPv6:   u.ipv6(),
+		Config:       cfg,
+		MAC:          randomMAC(),
+		PortForwards: fwds,
+		IPv4:         u.ipv4(),
+		IPv6:         u.ipv6(),
 	}
 
 	return u.mkVM(fcfg, diskPath, false)
@@ -315,6 +316,7 @@ func (v *VM) boot() error {
 	}
 	go func() {
 		v.cmd.Wait()
+		v.shutdown()
 		v.Close()
 	}()
 
@@ -456,10 +458,9 @@ func (v *VM) pause() error {
 		return errors.New("cannot freeze closed VM")
 	}
 
-	if _, err := fmt.Fprintf(v.monIn, "savevm snap\n"); err != nil {
+	if _, err := fmt.Fprintf(v.monIn, "stop\n"); err != nil {
 		return err
 	}
-
 	if _, err := readToPrompt(v.monOut); err != nil {
 		return err
 	}
@@ -472,11 +473,24 @@ func (v *VM) freeze(freezeDir string) error {
 	v.closed = true
 	defer v.shutdown()
 
+	if _, err := fmt.Fprintf(v.monIn, "savevm snap\n"); err != nil {
+		return err
+	}
+	if _, err := readToPrompt(v.monOut); err != nil {
+		return err
+	}
+
+	if _, err := fmt.Fprintf(v.monIn, "quit\n"); err != nil {
+		return err
+	}
+	<-v.ctx.Done()
+
 	cfg := &vmFreezeConfig{
-		Config: v.cfg.Copy(),
-		MAC:    v.mac,
-		IPv4:   v.ipv4,
-		IPv6:   v.ipv6,
+		Config:       v.cfg.Copy(),
+		MAC:          v.mac,
+		PortForwards: v.forwards,
+		IPv4:         v.ipv4,
+		IPv6:         v.ipv6,
 	}
 	cfg.Config.CommandLog = nil
 	bs, err := json.MarshalIndent(cfg, "", "  ")

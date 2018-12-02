@@ -68,7 +68,6 @@ type clusterFreezeConfig struct {
 type Cluster struct {
 	cfg        *ClusterConfig
 	u          *Universe
-	tmpdir     string
 	kubeconfig string
 	client     *kubernetes.Clientset
 
@@ -140,9 +139,9 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	}
 
 	ret := &Cluster{
-		cfg:    cfg,
-		u:      u,
-		tmpdir: p,
+		cfg:        cfg,
+		u:          u,
+		kubeconfig: filepath.Join(p, "kubeconfig"),
 	}
 
 	controllerCfg := cfg.VMConfig.Copy()
@@ -165,6 +164,50 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	}
 
 	u.clusters[cfg.Name] = ret
+	return ret, nil
+}
+
+func (u *Universe) thawCluster(freezeDir, name string) (*Cluster, error) {
+	if u.Cluster(name) != nil {
+		return nil, fmt.Errorf("universe already has a cluster named %q", name)
+	}
+
+	bs, err := ioutil.ReadFile(filepath.Join(freezeDir, "_cluster_"+name+".json"))
+	if err != nil {
+		return nil, err
+	}
+	var cfg clusterFreezeConfig
+	if err := json.Unmarshal(bs, &cfg); err != nil {
+		return nil, err
+	}
+
+	p, err := u.Tmpdir("cluster")
+	if err != nil {
+		return nil, err
+	}
+
+	ret := &Cluster{
+		cfg:        cfg.Config,
+		u:          u,
+		kubeconfig: filepath.Join(p, "kubeconfig"),
+		started:    true,
+	}
+
+	if err := ioutil.WriteFile(ret.kubeconfig, cfg.Kubeconfig, 0600); err != nil {
+		return nil, err
+	}
+
+	ret.controller = u.VM(fmt.Sprintf("%s-controller", ret.cfg.Name))
+	for i := 0; i < ret.cfg.NumNodes; i++ {
+		ret.nodes = append(ret.nodes, u.VM(fmt.Sprintf("%s-node%d", ret.cfg.Name, i+1)))
+	}
+
+	if err := ret.mkKubeClient(); err != nil {
+		return nil, err
+	}
+
+	u.clusters[name] = ret
+
 	return ret, nil
 }
 
@@ -236,6 +279,20 @@ func (c *Cluster) Start() error {
 
 var addrRe = regexp.MustCompile("https://.*:6443")
 
+func (c *Cluster) mkKubeClient() error {
+	config, err := clientcmd.BuildConfigFromFlags("", c.kubeconfig)
+	if err != nil {
+		return err
+	}
+
+	c.client, err = kubernetes.NewForConfig(config)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (c *Cluster) startController() error {
 	addons, err := assembleAddons(c.cfg.NetworkAddon, c.cfg.ExtraAddons)
 	if err != nil {
@@ -288,21 +345,11 @@ apiServerCertSANs:
 		return err
 	}
 	kubeconfig = addrRe.ReplaceAll(kubeconfig, []byte("https://127.0.0.1:"+strconv.Itoa(c.controller.ForwardedPort(6443))))
-	if err := ioutil.WriteFile(c.Kubeconfig(), kubeconfig, 0600); err != nil {
+	if err := ioutil.WriteFile(c.kubeconfig, kubeconfig, 0600); err != nil {
 		return err
 	}
 
-	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
-	if err != nil {
-		return err
-	}
-
-	c.client, err = kubernetes.NewForConfig(config)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return c.mkKubeClient()
 }
 
 func (c *Cluster) startNode(node *VM) error {
@@ -339,7 +386,7 @@ nodeRegistration:
 // Kubeconfig returns the path to a kubectl configuration file with
 // administrator credentials for the cluster.
 func (c *Cluster) Kubeconfig() string {
-	return filepath.Join(c.tmpdir, "kubeconfig")
+	return c.kubeconfig
 }
 
 // KubernetesClient returns a kubernetes client connected to the
@@ -366,7 +413,7 @@ func (c *Cluster) Registry() int {
 }
 
 func (c *Cluster) freeze(freezeDir string) error {
-	bs, err := ioutil.ReadFile(c.Kubeconfig())
+	bs, err := ioutil.ReadFile(c.kubeconfig)
 	if err != nil {
 		return fmt.Errorf("reading kubeconfig: %v", err)
 	}

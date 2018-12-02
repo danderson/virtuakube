@@ -170,7 +170,7 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	u, err := New(ctx)
+	u, err := New(ctx, "")
 	if err != nil {
 		return fmt.Errorf("creating virtuakube instance: %v", err)
 	}
