@@ -44,7 +44,7 @@ type Universe struct {
 	tmpdir   string
 	ctx      context.Context
 	shutdown context.CancelFunc
-	ports    chan int
+	nextPort int
 	nextIP4  net.IP
 	nextIP6  net.IP
 	vms      map[string]*VM
@@ -79,7 +79,7 @@ func New(ctx context.Context) (*Universe, error) {
 		tmpdir:   p,
 		ctx:      ctx,
 		shutdown: shutdown,
-		ports:    make(chan int),
+		nextPort: 50000,
 		nextIP4:  net.ParseIP("172.20.0.1").To4(),
 		nextIP6:  net.ParseIP("fd00::1"),
 		vms:      map[string]*VM{},
@@ -107,17 +107,6 @@ func New(ctx context.Context) (*Universe, error) {
 	go func() {
 		<-ctx.Done()
 		ret.Close()
-	}()
-	go func() {
-		port := 50000
-		for {
-			select {
-			case ret.ports <- port:
-				port++
-			case <-ctx.Done():
-				return
-			}
-		}
 	}()
 
 	return ret, nil
@@ -224,5 +213,11 @@ func (u *Universe) ipv6() net.IP {
 	u.nextIP6 = make(net.IP, 16)
 	copy(u.nextIP6, ret)
 	u.nextIP6[15]++
+	return ret
+}
+
+func (u *Universe) port() int {
+	ret := u.nextPort
+	u.nextPort++
 	return ret
 }

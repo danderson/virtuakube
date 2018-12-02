@@ -22,18 +22,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var incrVMID = make(chan int)
-
-func init() {
-	id := 1
-	go func() {
-		for {
-			incrVMID <- id
-			id++
-		}
-	}()
-}
-
 // VMConfig is the configuration for a virtual machine.
 type VMConfig struct {
 	// Image is the path to the base disk image for the VM. By
@@ -210,7 +198,7 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	sort.Ints(wantPorts)
 	fwds := map[int]int{}
 	for _, fwd := range wantPorts {
-		fwds[fwd] = <-u.ports
+		fwds[fwd] = u.port()
 	}
 
 	ctx, cancel := context.WithCancel(u.Context())
