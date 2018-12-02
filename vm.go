@@ -168,7 +168,7 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	}
 
 	if u.VM(cfg.Hostname) != nil {
-		return nil, fmt.Errorf("universe already has a VM named %q", err)
+		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Hostname)
 	}
 
 	tmp, err := u.Tmpdir("vm")
@@ -239,6 +239,8 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	if cfg.kernelPath != "" {
 		ret.cmd.Args = append(ret.cmd.Args, "-kernel", cfg.kernelPath, "-initrd", cfg.initrdPath, "-append", cfg.cmdline)
 	}
+
+	u.vms[cfg.Hostname] = ret
 
 	return ret, nil
 }
