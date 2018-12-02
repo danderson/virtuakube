@@ -116,6 +116,15 @@ func randomMAC() string {
 	return mac.String()
 }
 
+func randomHostname() string {
+	ret := make([]byte, 10)
+	if _, err := rand.Read(ret); err != nil {
+		panic("system ran out of randomness")
+	}
+	ret[0], ret[1] = 'v', 'm'
+	return string(ret)
+}
+
 func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
 	if cfg == nil || cfg.Image == "" {
 		return nil, errors.New("VMConfig with at least BackingImagePath is required")
@@ -133,7 +142,7 @@ func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
 	cfg.Image = bp
 
 	if cfg.Hostname == "" {
-		cfg.Hostname = "vm" + strconv.Itoa(<-incrVMID)
+		cfg.Hostname = randomHostname()
 	}
 	if cfg.MemoryMiB == 0 {
 		cfg.MemoryMiB = 1024
@@ -157,6 +166,10 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	cfg, err := validateVMConfig(cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	if u.VM(cfg.Hostname) != nil {
+		return nil, fmt.Errorf("universe already has a VM named %q", err)
 	}
 
 	tmp, err := u.Tmpdir("vm")

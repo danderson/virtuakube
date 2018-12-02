@@ -47,6 +47,7 @@ type Universe struct {
 	ports    chan int
 	nextIP4  net.IP
 	nextIP6  net.IP
+	vms      map[string]*VM
 
 	swtch *exec.Cmd
 	sock  string
@@ -80,6 +81,7 @@ func New(ctx context.Context) (*Universe, error) {
 		ports:    make(chan int),
 		nextIP4:  net.ParseIP("172.20.0.1").To4(),
 		nextIP6:  net.ParseIP("fd00::1"),
+		vms:      map[string]*VM{},
 		swtch: exec.CommandContext(
 			ctx,
 			"vde_switch",
@@ -160,6 +162,10 @@ func (u *Universe) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return errors.New("timeout")
 	}
+}
+
+func (u *Universe) VM(hostname string) *VM {
+	return u.vms[hostname]
 }
 
 func (u *Universe) switchSock() string {
