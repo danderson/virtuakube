@@ -24,18 +24,6 @@ import (
 	"go.universe.tf/virtuakube/internal/assets"
 )
 
-var incrClusterID = make(chan int)
-
-func init() {
-	id := 1
-	go func() {
-		for {
-			incrClusterID <- id
-			id++
-		}
-	}()
-}
-
 // ClusterConfig is the configuration for a virtual Kubernetes
 // cluster.
 type ClusterConfig struct {
@@ -157,10 +145,8 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 		tmpdir: p,
 	}
 
-	clusterID := <-incrClusterID
-
 	controllerCfg := cfg.VMConfig.Copy()
-	controllerCfg.Hostname = fmt.Sprintf("cluster%d-controller", clusterID)
+	controllerCfg.Hostname = fmt.Sprintf("%s-controller", cfg.Name)
 	controllerCfg.PortForwards[30000] = true
 	controllerCfg.PortForwards[6443] = true
 	ret.controller, err = u.NewVM(controllerCfg)
@@ -170,7 +156,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 
 	for i := 0; i < cfg.NumNodes; i++ {
 		nodeCfg := cfg.VMConfig.Copy()
-		nodeCfg.Hostname = fmt.Sprintf("cluster%d-node%d", clusterID, i+1)
+		nodeCfg.Hostname = fmt.Sprintf("%s-node%d", cfg.Name, i+1)
 		node, err := u.NewVM(nodeCfg)
 		if err != nil {
 			return nil, err
