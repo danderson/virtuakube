@@ -48,6 +48,7 @@ type Universe struct {
 	nextIP4  net.IP
 	nextIP6  net.IP
 	vms      map[string]*VM
+	clusters map[string]*Cluster
 
 	swtch *exec.Cmd
 	sock  string
@@ -82,6 +83,7 @@ func New(ctx context.Context) (*Universe, error) {
 		nextIP4:  net.ParseIP("172.20.0.1").To4(),
 		nextIP6:  net.ParseIP("fd00::1"),
 		vms:      map[string]*VM{},
+		clusters: map[string]*Cluster{},
 		swtch: exec.CommandContext(
 			ctx,
 			"vde_switch",
@@ -166,6 +168,10 @@ func (u *Universe) Wait(ctx context.Context) error {
 
 func (u *Universe) VM(hostname string) *VM {
 	return u.vms[hostname]
+}
+
+func (u *Universe) Cluster(name string) *VM {
+	return u.clusters[name]
 }
 
 func (u *Universe) switchSock() string {

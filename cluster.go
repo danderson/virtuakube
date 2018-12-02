@@ -3,6 +3,7 @@ package virtuakube
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -37,6 +38,7 @@ func init() {
 // ClusterConfig is the configuration for a virtual Kubernetes
 // cluster.
 type ClusterConfig struct {
+	Name string
 	// NumNodes is the number of Kubernetes worker nodes to run.
 	// TODO: only supports 1 currently
 	NumNodes int
@@ -56,6 +58,7 @@ type ClusterConfig struct {
 // Copy returns a deep copy of the cluster config.
 func (c *ClusterConfig) Copy() *ClusterConfig {
 	ret := &ClusterConfig{
+		Name:         c.Name,
 		NumNodes:     c.NumNodes,
 		VMConfig:     c.VMConfig.Copy(),
 		NetworkAddon: c.NetworkAddon,
@@ -82,6 +85,14 @@ type Cluster struct {
 	started   bool
 }
 
+func randomClusterName() string {
+	rnd := make([]byte, 6)
+	if _, err := rand.Read(rnd); err != nil {
+		panic("system ran out of randomness")
+	}
+	return fmt.Sprintf("cluster%x", rnd)
+}
+
 func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
 	cfg = cfg.Copy()
 
@@ -93,6 +104,10 @@ func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
 	cfg.VMConfig, err = validateVMConfig(cfg.VMConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	if cfg.Name == "" {
+		cfg.Name = randomClusterName()
 	}
 
 	if cfg.NetworkAddon == "" {
@@ -119,6 +134,10 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	cfg, err := validateClusterConfig(cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	if u.Cluster(cfg.Name) != nil {
+		return nil, fmt.Errorf("universe already has a cluster named %q", cfg.Name)
 	}
 
 	p, err := u.Tmpdir("cluster")
@@ -153,6 +172,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 		ret.nodes = append(ret.nodes, node)
 	}
 
+	u.clusters[cfg.Name] = ret
 	return ret, nil
 }
 
