@@ -145,6 +145,10 @@ func (u *Universe) Context() context.Context {
 func (u *Universe) Close() error {
 	u.closeMu.Lock()
 	defer u.closeMu.Unlock()
+	return u.closeWithLock()
+}
+
+func (u *Universe) closeWithLock() error {
 	if u.closed {
 		return u.closeErr
 	}
@@ -164,6 +168,35 @@ func (u *Universe) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return errors.New("timeout")
 	}
+}
+
+// Freeze checkpoints the universe into freezeDir, such that it can be
+// thawed back into the same state later.
+func (u *Universe) Freeze(freezeDir string) error {
+	// Grab the universe lock to prevent Close from interfering in the
+	// freeze.
+	u.closeMu.Lock()
+	defer u.closeMu.Unlock()
+
+	for hostname, vm := range u.vms {
+		if err := vm.pause(); err != nil {
+			return fmt.Errorf("pausing %q: %v", hostname, err)
+		}
+	}
+
+	for hostname, vm := range u.vms {
+		if err := vm.freeze(freezeDir); err != nil {
+			return fmt.Errorf("freezing VM %q: %v", hostname, err)
+		}
+	}
+
+	for name, cluster := range u.clusters {
+		if err := cluster.freeze(freezeDir); err != nil {
+			return fmt.Errorf("freezing cluster %q: %v", name, err)
+		}
+	}
+
+	return u.closeWithLock()
 }
 
 func (u *Universe) VM(hostname string) *VM {

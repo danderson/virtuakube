@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -81,6 +83,13 @@ func (v *VMConfig) Copy() *VMConfig {
 		ret.PortForwards[fwd] = v
 	}
 	return ret
+}
+
+type vmFreezeConfig struct {
+	Config *VMConfig
+	MAC    string
+	IPv4   string
+	IPv6   string
 }
 
 // VM is a virtual machine.
@@ -373,6 +382,61 @@ func (v *VM) Close() error {
 
 	if !v.cfg.NonEssential {
 		v.u.Close()
+	}
+
+	return nil
+}
+
+func (v *VM) pause() error {
+	// Grab the lock and pause the VM. We keep things locked because
+	// the universe will call freeze() to complete the process
+	// shortly, and we don't want a Close to race with the freezing.
+	v.mu.Lock()
+	if v.closed {
+		return errors.New("cannot freeze closed VM")
+	}
+	_, err := fmt.Fprintf(v.monitor, "stop\n")
+	return err
+}
+
+func (v *VM) freeze(freezeDir string) error {
+	defer v.mu.Unlock()
+	v.closed = true
+	defer v.shutdown()
+
+	if _, err := fmt.Fprintf(v.monitor, "savevm snap\nquit\n"); err != nil {
+		return err
+	}
+
+	cfg := &vmFreezeConfig{
+		Config: v.cfg.Copy(),
+		MAC:    v.mac,
+		IPv4:   v.ipv4.String(),
+		IPv6:   v.ipv6.String(),
+	}
+	cfg.Config.CommandLog = nil
+	bs, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling frozen VM config: %v", err)
+	}
+
+	fname := filepath.Join(freezeDir, "_vm_"+v.cfg.Hostname)
+	if err := ioutil.WriteFile(fname+".json", bs, 0600); err != nil {
+		return fmt.Errorf("writing frozen VM config: %v", err)
+	}
+
+	src, err := os.Open(v.diskPath)
+	if err != nil {
+		return fmt.Errorf("opening disk image for freeze: %v", err)
+	}
+	defer src.Close()
+	dst, err := os.Create(fname + ".qcow2")
+	if err != nil {
+		return fmt.Errorf("creating freeze image: %v", err)
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("saving freeze image: %v", err)
 	}
 
 	return nil

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -43,7 +44,7 @@ type ClusterConfig struct {
 	// TODO: only supports 1 currently
 	NumNodes int
 	// The VMConfig template to use when creating cluster VMs.
-	*VMConfig
+	VMConfig *VMConfig
 	// NetworkAddon is the Kubernetes network addon to install. Can be
 	// an absolute path to a manifest yaml, or one of the builtin
 	// addons "calico" or "weave".
@@ -68,6 +69,11 @@ func (c *ClusterConfig) Copy() *ClusterConfig {
 		c.ExtraAddons = append(c.ExtraAddons, addon)
 	}
 	return ret
+}
+
+type clusterFreezeConfig struct {
+	Config     *ClusterConfig
+	Kubeconfig []byte
 }
 
 // Cluster is a virtual Kubernetes cluster.
@@ -371,6 +377,30 @@ func (c *Cluster) Nodes() []*VM {
 // localhost:30000 on all nodes.
 func (c *Cluster) Registry() int {
 	return c.controller.ForwardedPort(30000)
+}
+
+func (c *Cluster) freeze(freezeDir string) error {
+	bs, err := ioutil.ReadFile(c.Kubeconfig())
+	if err != nil {
+		return fmt.Errorf("reading kubeconfig: %v", err)
+	}
+
+	cfg := &clusterFreezeConfig{
+		Config:     c.cfg.Copy(),
+		Kubeconfig: bs,
+	}
+	cfg.Config.VMConfig.CommandLog = nil
+
+	bs, err = json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling cluster config: %v", err)
+	}
+
+	if err := ioutil.WriteFile(filepath.Join(freezeDir, "_cluster_"+c.cfg.Name+".json"), bs, 0600); err != nil {
+		return fmt.Errorf("writing cluster config: %v", err)
+	}
+
+	return nil
 }
 
 func networkAddonBytes(addon string) ([]byte, error) {
