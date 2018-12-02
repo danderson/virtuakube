@@ -2,6 +2,7 @@ package virtuakube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -62,6 +63,52 @@ type Universe struct {
 // lifetime of the universe, i.e. if the context is canceled or times
 // out, the universe will be destroyed.
 func New(ctx context.Context) (*Universe, error) {
+	cfg := &universeFreezeConfig{
+		NextPort: 50000,
+		NextIPv4: net.ParseIP("172.20.0.1"),
+		NextIPv6: net.ParseIP("fd00::1"),
+	}
+	return mkUniverse(ctx, cfg)
+}
+
+func Thaw(ctx context.Context, freezeDir string) (*Universe, error) {
+	bs, err := ioutil.ReadFile(filepath.Join(freezeDir, "_universe.json"))
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg universeFreezeConfig
+	if err := json.Unmarshal(bs, &cfg); err != nil {
+		return nil, err
+	}
+
+	u, err := mkUniverse(ctx, &cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, hostname := range cfg.VMs {
+		if _, err := u.thawVM(freezeDir, hostname); err != nil {
+			return nil, err
+		}
+	}
+	for hostname, vm := range u.vms {
+		if err := vm.boot(); err != nil {
+			return nil, fmt.Errorf("booting VM %q: %v", hostname, err)
+		}
+	}
+	for hostname, vm := range u.vms {
+		if err := vm.waitReady(); err != nil {
+			return nil, fmt.Errorf("waiting for VM %q: %v", hostname, err)
+		}
+	}
+
+	// TODO: restore clusters
+
+	return u, nil
+}
+
+func mkUniverse(ctx context.Context, cfg *universeFreezeConfig) (*Universe, error) {
 	if err := checkTools(universeTools); err != nil {
 		return nil, err
 	}
@@ -79,9 +126,9 @@ func New(ctx context.Context) (*Universe, error) {
 		tmpdir:   p,
 		ctx:      ctx,
 		shutdown: shutdown,
-		nextPort: 50000,
-		nextIP4:  net.ParseIP("172.20.0.1").To4(),
-		nextIP6:  net.ParseIP("fd00::1"),
+		nextPort: cfg.NextPort,
+		nextIP4:  cfg.NextIPv4.To4(),
+		nextIP6:  cfg.NextIPv6,
 		vms:      map[string]*VM{},
 		clusters: map[string]*Cluster{},
 		swtch: exec.CommandContext(
@@ -159,6 +206,14 @@ func (u *Universe) Wait(ctx context.Context) error {
 	}
 }
 
+type universeFreezeConfig struct {
+	NextPort int
+	NextIPv4 net.IP
+	NextIPv6 net.IP
+	VMs      []string
+	Clusters []string
+}
+
 // Freeze checkpoints the universe into freezeDir, such that it can be
 // thawed back into the same state later.
 func (u *Universe) Freeze(freezeDir string) error {
@@ -183,6 +238,26 @@ func (u *Universe) Freeze(freezeDir string) error {
 		if err := cluster.freeze(freezeDir); err != nil {
 			return fmt.Errorf("freezing cluster %q: %v", name, err)
 		}
+	}
+
+	cfg := &universeFreezeConfig{
+		NextPort: u.nextPort,
+		NextIPv4: u.nextIP4,
+		NextIPv6: u.nextIP6,
+	}
+	for hostname := range u.vms {
+		cfg.VMs = append(cfg.VMs, hostname)
+	}
+	for name := range u.clusters {
+		cfg.Clusters = append(cfg.Clusters, name)
+	}
+
+	bs, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling universe config: %v", err)
+	}
+	if err := ioutil.WriteFile(filepath.Join(freezeDir, "_universe.json"), bs, 0600); err != nil {
+		return fmt.Errorf("writing universe config: %v", err)
 	}
 
 	return u.closeWithLock()

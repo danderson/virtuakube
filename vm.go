@@ -76,8 +76,8 @@ func (v *VMConfig) Copy() *VMConfig {
 type vmFreezeConfig struct {
 	Config *VMConfig
 	MAC    string
-	IPv4   string
-	IPv6   string
+	IPv4   net.IP
+	IPv6   net.IP
 }
 
 // VM is a virtual machine.
@@ -92,10 +92,11 @@ type VM struct {
 	ctx      context.Context
 	shutdown context.CancelFunc
 
-	cmd     *exec.Cmd
-	ssh     *ssh.Client
-	monitor io.WriteCloser
-	ready   chan *ssh.Client
+	cmd    *exec.Cmd
+	ssh    *ssh.Client
+	monIn  io.WriteCloser
+	monOut io.ReadCloser
+	ready  chan *ssh.Client
 
 	mu      sync.Mutex
 	started bool
@@ -158,41 +159,13 @@ func makeForwards(fwds map[int]int) string {
 	return strings.Join(ret, ",")
 }
 
-// NewVM creates an unstarted VM with the given configuration.
-func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
-	cfg, err := validateVMConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	if u.VM(cfg.Hostname) != nil {
-		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Hostname)
-	}
-
-	tmp, err := u.Tmpdir("vm")
-	if err != nil {
-		return nil, err
-	}
-
-	diskPath := cfg.Image
-	if !cfg.NoOverlay {
-		diskPath = filepath.Join(tmp, "disk.qcow2")
-		disk := exec.Command(
-			"qemu-img",
-			"create",
-			"-f", "qcow2",
-			"-b", cfg.Image,
-			"-f", "qcow2",
-			diskPath,
-		)
-		out, err := disk.CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("creating VM disk: %v\n%s", err, string(out))
-		}
+func (u *Universe) mkVM(cfg *vmFreezeConfig, diskPath string, resume bool) (*VM, error) {
+	if u.VM(cfg.Config.Hostname) != nil {
+		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Config.Hostname)
 	}
 
 	wantPorts := []int{}
-	for fwd := range cfg.PortForwards {
+	for fwd := range cfg.Config.PortForwards {
 		wantPorts = append(wantPorts, fwd)
 	}
 	sort.Ints(wantPorts)
@@ -204,13 +177,13 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	ctx, cancel := context.WithCancel(u.Context())
 
 	ret := &VM{
-		cfg:      cfg,
+		cfg:      cfg.Config,
 		u:        u,
 		diskPath: diskPath,
-		mac:      randomMAC(),
+		mac:      cfg.MAC,
 		forwards: fwds,
-		ipv4:     u.ipv4(),
-		ipv6:     u.ipv6(),
+		ipv4:     cfg.IPv4,
+		ipv6:     cfg.IPv6,
 		ctx:      ctx,
 		shutdown: cancel,
 		ready:    make(chan *ssh.Client),
@@ -227,47 +200,133 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		"-netdev", fmt.Sprintf("user,id=net0,%s", makeForwards(ret.forwards)),
 		"-netdev", fmt.Sprintf("vde,id=net1,sock=%s", u.switchSock()),
 		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", ret.diskPath),
-		"-nographic",
-		"-serial", "null",
+		//"-nographic",
+		//"-serial", "null",
 		"-monitor", "stdio",
 	)
-	if !cfg.NoKVM {
+	if !ret.cfg.NoKVM {
 		ret.cmd.Args = append(ret.cmd.Args, "-enable-kvm")
 	}
-	if cfg.kernelPath != "" {
-		ret.cmd.Args = append(ret.cmd.Args, "-kernel", cfg.kernelPath, "-initrd", cfg.initrdPath, "-append", cfg.cmdline)
+	if ret.cfg.kernelPath != "" {
+		ret.cmd.Args = append(ret.cmd.Args, "-kernel", ret.cfg.kernelPath, "-initrd", ret.cfg.initrdPath, "-append", ret.cfg.cmdline)
 	}
-	ret.monitor, err = ret.cmd.StdinPipe()
+	if resume {
+		ret.cmd.Args = append(ret.cmd.Args, "-loadvm", "snap")
+	}
+	monIn, err := ret.cmd.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
+	ret.monIn = monIn
+	monOut, err := ret.cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	ret.monOut = monOut
 
-	u.vms[cfg.Hostname] = ret
+	fmt.Println(strings.Join(ret.cmd.Args, " "))
+
+	u.vms[ret.cfg.Hostname] = ret
 
 	return ret, nil
 }
 
-// Start boots the virtual machine. The universe is destroyed if the
-// VM ever shuts down.
-func (v *VM) Start() error {
+// NewVM creates an unstarted VM with the given configuration.
+func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
+	cfg, err := validateVMConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	diskPath := cfg.Image
+	if !cfg.NoOverlay {
+		tmp, err := u.Tmpdir("vm")
+		if err != nil {
+			return nil, err
+		}
+
+		if !cfg.NoOverlay {
+			diskPath = filepath.Join(tmp, "disk.qcow2")
+			disk := exec.Command(
+				"qemu-img",
+				"create",
+				"-f", "qcow2",
+				"-b", cfg.Image,
+				"-f", "qcow2",
+				diskPath,
+			)
+			out, err := disk.CombinedOutput()
+			if err != nil {
+				return nil, fmt.Errorf("creating VM disk: %v\n%s", err, string(out))
+			}
+		}
+	}
+
+	fcfg := &vmFreezeConfig{
+		Config: cfg,
+		MAC:    randomMAC(),
+		IPv4:   u.ipv4(),
+		IPv6:   u.ipv6(),
+	}
+
+	return u.mkVM(fcfg, diskPath, false)
+}
+
+func (u *Universe) thawVM(freezeDir, hostname string) (*VM, error) {
+	bs, err := ioutil.ReadFile(filepath.Join(freezeDir, "_vm_"+hostname+".json"))
+	if err != nil {
+		return nil, err
+	}
+	var cfg vmFreezeConfig
+	if err := json.Unmarshal(bs, &cfg); err != nil {
+		return nil, err
+	}
+
+	tmp, err := u.Tmpdir("vm")
+	if err != nil {
+		return nil, err
+	}
+
+	diskPath := filepath.Join(tmp, "disk.qcow2")
+	if err := copyFile(filepath.Join(freezeDir, "_vm_"+hostname+".qcow2"), diskPath); err != nil {
+		return nil, err
+	}
+
+	return u.mkVM(&cfg, diskPath, true)
+}
+
+// boot starts the VM process.
+func (v *VM) boot() error {
 	v.mu.Lock()
-	defer v.mu.Unlock()
+	// We hold the lock until waitReady is called. This unusual
+	// cross-function lock holding is to support mass thawing of VMs,
+	// where we want to start the processes all at once, and then
+	// patiently wait for each one to be reachable.
 
 	if v.started {
+		v.mu.Unlock()
 		return errors.New("already started")
 	}
 	v.started = true
 
 	if err := v.cmd.Start(); err != nil {
+		v.mu.Unlock()
+		return err
+	}
+	go func() {
+		v.cmd.Wait()
 		v.Close()
+	}()
+
+	if _, err := readToPrompt(v.monOut); err != nil {
 		return err
 	}
 
-	go func() {
-		v.cmd.Wait()
-		// TODO: better logging and stuff
-		v.Close()
-	}()
+	return nil
+}
+
+func (v *VM) waitReady() error {
+	defer v.mu.Unlock()
 
 	// Try dialing SSH
 	for v.ctx.Err() == nil {
@@ -286,6 +345,19 @@ func (v *VM) Start() error {
 
 		v.ssh = client
 		break
+	}
+
+	return nil
+}
+
+// Start boots the virtual machine. The universe is destroyed if the
+// VM ever shuts down.
+func (v *VM) Start() error {
+	if err := v.boot(); err != nil {
+		return err
+	}
+	if err := v.waitReady(); err != nil {
+		return err
 	}
 
 	err := v.RunMultiple(
@@ -383,8 +455,16 @@ func (v *VM) pause() error {
 	if v.closed {
 		return errors.New("cannot freeze closed VM")
 	}
-	_, err := fmt.Fprintf(v.monitor, "stop\n")
-	return err
+
+	if _, err := fmt.Fprintf(v.monIn, "savevm snap\n"); err != nil {
+		return err
+	}
+
+	if _, err := readToPrompt(v.monOut); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (v *VM) freeze(freezeDir string) error {
@@ -392,15 +472,11 @@ func (v *VM) freeze(freezeDir string) error {
 	v.closed = true
 	defer v.shutdown()
 
-	if _, err := fmt.Fprintf(v.monitor, "savevm snap\nquit\n"); err != nil {
-		return err
-	}
-
 	cfg := &vmFreezeConfig{
 		Config: v.cfg.Copy(),
 		MAC:    v.mac,
-		IPv4:   v.ipv4.String(),
-		IPv6:   v.ipv6.String(),
+		IPv4:   v.ipv4,
+		IPv6:   v.ipv6,
 	}
 	cfg.Config.CommandLog = nil
 	bs, err := json.MarshalIndent(cfg, "", "  ")
@@ -413,21 +489,7 @@ func (v *VM) freeze(freezeDir string) error {
 		return fmt.Errorf("writing frozen VM config: %v", err)
 	}
 
-	src, err := os.Open(v.diskPath)
-	if err != nil {
-		return fmt.Errorf("opening disk image for freeze: %v", err)
-	}
-	defer src.Close()
-	dst, err := os.Create(fname + ".qcow2")
-	if err != nil {
-		return fmt.Errorf("creating freeze image: %v", err)
-	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("saving freeze image: %v", err)
-	}
-
-	return nil
+	return copyFile(v.diskPath, fname+".qcow2")
 }
 
 // ForwardedPort returns the port on localhost that maps to the given
@@ -438,3 +500,46 @@ func (v *VM) ForwardedPort(dst int) int {
 
 func (v *VM) IPv4() net.IP { return v.ipv4 }
 func (v *VM) IPv6() net.IP { return v.ipv6 }
+
+func copyFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return nil
+}
+
+var (
+	qemuPrompt = []byte("\r\n(qemu) ")
+	ansiCSI_K  = []byte("\x1b[K")
+)
+
+func readToPrompt(r io.Reader) (string, error) {
+	var buf bytes.Buffer
+	b := make([]byte, 100)
+	for {
+		n, err := r.Read(b)
+		if err != nil {
+			return "", err
+		}
+		buf.Write(b[:n])
+		have := buf.Bytes()
+		if bytes.HasSuffix(have, qemuPrompt) {
+			buf.Reset()
+			ret := bytes.TrimSuffix(have, qemuPrompt)
+			if i := bytes.LastIndex(ret, ansiCSI_K); i != -1 {
+				ret = ret[i+len(ansiCSI_K):]
+			}
+			return strings.TrimSpace(strings.Replace(string(ret), "\r\n", "\n", -1)), nil
+		}
+	}
+}
