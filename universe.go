@@ -170,7 +170,7 @@ func (u *Universe) VM(hostname string) *VM {
 	return u.vms[hostname]
 }
 
-func (u *Universe) Cluster(name string) *VM {
+func (u *Universe) Cluster(name string) *Cluster {
 	return u.clusters[name]
 }
 
