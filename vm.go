@@ -95,9 +95,10 @@ type VM struct {
 	ctx      context.Context
 	shutdown context.CancelFunc
 
-	cmd   *exec.Cmd
-	ssh   *ssh.Client
-	ready chan *ssh.Client
+	cmd     *exec.Cmd
+	ssh     *ssh.Client
+	monitor io.WriteCloser
+	ready   chan *ssh.Client
 
 	mu      sync.Mutex
 	started bool
@@ -231,13 +232,17 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", ret.diskPath),
 		"-nographic",
 		"-serial", "null",
-		"-monitor", "none",
+		"-monitor", "stdio",
 	)
 	if !cfg.NoKVM {
 		ret.cmd.Args = append(ret.cmd.Args, "-enable-kvm")
 	}
 	if cfg.kernelPath != "" {
 		ret.cmd.Args = append(ret.cmd.Args, "-kernel", cfg.kernelPath, "-initrd", cfg.initrdPath, "-append", cfg.cmdline)
+	}
+	ret.monitor, err = ret.cmd.StdinPipe()
+	if err != nil {
+		return nil, err
 	}
 
 	u.vms[cfg.Hostname] = ret
@@ -256,8 +261,6 @@ func (v *VM) Start() error {
 	}
 	v.started = true
 
-	v.cmd.Stdout = os.Stdout
-	v.cmd.Stderr = os.Stderr
 	if err := v.cmd.Start(); err != nil {
 		v.Close()
 		return err
