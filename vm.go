@@ -117,12 +117,11 @@ func randomMAC() string {
 }
 
 func randomHostname() string {
-	ret := make([]byte, 10)
-	if _, err := rand.Read(ret); err != nil {
+	rnd := make([]byte, 6)
+	if _, err := rand.Read(rnd); err != nil {
 		panic("system ran out of randomness")
 	}
-	ret[0], ret[1] = 'v', 'm'
-	return string(ret)
+	return fmt.Sprintf("vm%x", rnd)
 }
 
 func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
