@@ -170,14 +170,13 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	u, err := New(ctx, "")
+	u, err := New(ctx, tmp)
 	if err != nil {
 		return fmt.Errorf("creating virtuakube instance: %v", err)
 	}
 	defer u.Close()
 	v, err := u.NewVM(&VMConfig{
 		Image:      imgPath,
-		NoOverlay:  true,
 		MemoryMiB:  2048,
 		CommandLog: cfg.BuildLog,
 		NoKVM:      cfg.NoKVM,
@@ -228,7 +227,9 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	// Shut down the VM. Shutdown triggers destruction of the
 	// universe, so we can wait for the context to get canceled.
 	v.Run("poweroff")
-	<-u.Context().Done()
+	if err := v.Wait(context.Background()); err != nil {
+		return fmt.Errorf("waiting for VM shutdown: %v", err)
+	}
 
 	cmd = exec.CommandContext(
 		ctx,

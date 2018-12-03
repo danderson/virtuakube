@@ -4,14 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/signal"
-	"time"
 
 	"go.universe.tf/virtuakube"
 )
 
 var (
+	dir          = flag.String("universe-dir", "", "directory in which to place the universe")
 	baseImg      = flag.String("vm-img", "virtuakube.qcow2", "VM base image")
 	memory       = flag.Int("memory", 1024, "amount of memory per VM, in MiB")
 	nodes        = flag.Int("nodes", 1, "number of worker nodes in addition to master")
@@ -29,8 +30,20 @@ func main() {
 }
 
 func run() error {
-	start := time.Now()
-	universe, err := virtuakube.New(context.Background())
+	udir := *dir
+	if udir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		tmp, err := ioutil.TempDir(wd, "vkube")
+		if err != nil {
+			return err
+		}
+		udir = tmp
+	}
+
+	universe, err := virtuakube.New(context.Background(), udir)
 	if err != nil {
 		return fmt.Errorf("Creating universe: %v", err)
 	}
@@ -47,6 +60,7 @@ func run() error {
 	}()
 
 	cluster, err := universe.NewCluster(&virtuakube.ClusterConfig{
+		Name:     "example",
 		NumNodes: *nodes,
 		VMConfig: &virtuakube.VMConfig{
 			Image:        *baseImg,
@@ -65,23 +79,22 @@ func run() error {
 		return fmt.Errorf("Starting cluster: %v", err)
 	}
 
-	fmt.Printf(`Cluster is up, took %s. To talk to Kubernetes:
+	fmt.Printf(`Cluster is up. To talk to Kubernetes:
 
-export KUBECONFIG=%s
+	export KUBECONFIG=%s
 
-SSH ports for debugging (password is "root"):
+	SSH ports for debugging (password is "root"):
 
-controller: ssh -p%d root@localhost
-`, time.Since(start), cluster.Kubeconfig(), cluster.Controller().ForwardedPort(22))
+	controller: ssh -p%d root@localhost
+	`, cluster.Kubeconfig(), cluster.Controller().ForwardedPort(22))
 	for i, vm := range cluster.Nodes() {
 		fmt.Printf("node %d: ssh -p%d root@localhost\n", i+1, vm.ForwardedPort(22))
 	}
-	fmt.Println("")
+	fmt.Println("\nHit ctrl+C to shut down.")
 
 	if err := universe.Wait(context.Background()); err != nil {
-		return fmt.Errorf("Waiting for universe to end: %v", err)
+		return fmt.Errorf("waiting for universe to end: %v", err)
 	}
 
-	fmt.Println("Shutting down.")
 	return nil
 }

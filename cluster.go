@@ -13,15 +13,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"go.universe.tf/virtuakube/internal/assets"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
-
-	"go.universe.tf/virtuakube/internal/assets"
 )
 
 // ClusterConfig is the configuration for a virtual Kubernetes
@@ -36,12 +36,7 @@ type ClusterConfig struct {
 	// NetworkAddon is the Kubernetes network addon to install. Can be
 	// an absolute path to a manifest yaml, or one of the builtin
 	// addons "calico" or "weave".
-	//
-	// TODO: that last bit is currently a lie, only paths work.
 	NetworkAddon string
-	// ExtraAddons is a list of Kubernetes manifest yamls to apply to
-	// the cluster, in addition to the network addon.
-	ExtraAddons []string
 }
 
 // Copy returns a deep copy of the cluster config.
@@ -51,31 +46,30 @@ func (c *ClusterConfig) Copy() *ClusterConfig {
 		NumNodes:     c.NumNodes,
 		VMConfig:     c.VMConfig.Copy(),
 		NetworkAddon: c.NetworkAddon,
-		ExtraAddons:  make([]string, 0, len(c.ExtraAddons)),
-	}
-	for _, addon := range c.ExtraAddons {
-		c.ExtraAddons = append(c.ExtraAddons, addon)
 	}
 	return ret
 }
 
-type clusterFreezeConfig struct {
-	Config     *ClusterConfig
-	Kubeconfig []byte
-}
-
 // Cluster is a virtual Kubernetes cluster.
 type Cluster struct {
-	cfg        *ClusterConfig
-	u          *Universe
-	kubeconfig string
-	client     *kubernetes.Clientset
+	cfg *ClusterConfig
 
+	dir string
+
+	// Context for the lifetime of the cluster. Canceled when the
+	// universe ends.
+	ctx context.Context
+
+	mu sync.Mutex
+
+	// Kubernetes client connected to the cluster.
+	client *kubernetes.Clientset
+
+	// Cluster VMs.
 	controller *VM
 	nodes      []*VM
 
-	startedMu sync.Mutex
-	started   bool
+	started bool
 }
 
 func randomClusterName() string {
@@ -107,17 +101,6 @@ func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
 		return nil, errors.New("must specify network addon")
 	}
 
-	for i, extra := range cfg.ExtraAddons {
-		eap, err := filepath.Abs(extra)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := os.Stat(eap); err != nil {
-			return nil, err
-		}
-		cfg.ExtraAddons[i] = eap
-	}
-
 	return cfg, nil
 }
 
@@ -133,15 +116,15 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 		return nil, fmt.Errorf("universe already has a cluster named %q", cfg.Name)
 	}
 
-	p, err := u.Tmpdir("cluster")
-	if err != nil {
+	dir := filepath.Join(u.dir, "cluster", cfg.Name)
+	if err := os.Mkdir(dir, 0700); err != nil {
 		return nil, err
 	}
 
 	ret := &Cluster{
-		cfg:        cfg,
-		u:          u,
-		kubeconfig: filepath.Join(p, "kubeconfig"),
+		cfg: cfg,
+		dir: dir,
+		ctx: u.ctx,
 	}
 
 	controllerCfg := cfg.VMConfig.Copy()
@@ -163,49 +146,52 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 		ret.nodes = append(ret.nodes, node)
 	}
 
+	u.mu.Lock()
+	u.mu.Unlock()
+	if u.clusters[cfg.Name] != nil {
+		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Name)
+	}
 	u.clusters[cfg.Name] = ret
 	return ret, nil
 }
 
-func (u *Universe) thawCluster(freezeDir, name string) (*Cluster, error) {
+func (u *Universe) thawCluster(name string) (*Cluster, error) {
 	if u.Cluster(name) != nil {
 		return nil, fmt.Errorf("universe already has a cluster named %q", name)
 	}
 
-	bs, err := ioutil.ReadFile(filepath.Join(freezeDir, "_cluster_"+name+".json"))
+	dir := filepath.Join(u.dir, "cluster", name)
+
+	bs, err := ioutil.ReadFile(filepath.Join(dir, "cluster.json"))
 	if err != nil {
 		return nil, err
 	}
-	var cfg clusterFreezeConfig
+	var cfg ClusterConfig
 	if err := json.Unmarshal(bs, &cfg); err != nil {
 		return nil, err
 	}
 
-	p, err := u.Tmpdir("cluster")
-	if err != nil {
-		return nil, err
-	}
-
 	ret := &Cluster{
-		cfg:        cfg.Config,
-		u:          u,
-		kubeconfig: filepath.Join(p, "kubeconfig"),
-		started:    true,
+		cfg:     &cfg,
+		dir:     dir,
+		ctx:     u.ctx,
+		started: true,
 	}
 
-	if err := ioutil.WriteFile(ret.kubeconfig, cfg.Kubeconfig, 0600); err != nil {
-		return nil, err
-	}
-
-	ret.controller = u.VM(fmt.Sprintf("%s-controller", ret.cfg.Name))
+	ret.controller = u.VM(fmt.Sprintf("%s-controller", cfg.Name))
 	for i := 0; i < ret.cfg.NumNodes; i++ {
-		ret.nodes = append(ret.nodes, u.VM(fmt.Sprintf("%s-node%d", ret.cfg.Name, i+1)))
+		ret.nodes = append(ret.nodes, u.VM(fmt.Sprintf("%s-node%d", cfg.Name, i+1)))
 	}
 
 	if err := ret.mkKubeClient(); err != nil {
 		return nil, err
 	}
 
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.clusters[cfg.Name] != nil {
+		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Name)
+	}
 	u.clusters[name] = ret
 
 	return ret, nil
@@ -214,8 +200,8 @@ func (u *Universe) thawCluster(freezeDir, name string) (*Cluster, error) {
 // Start boots the virtual cluster. The universe is destroyed if any
 // VM in the cluster shuts down.
 func (c *Cluster) Start() error {
-	c.startedMu.Lock()
-	defer c.startedMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.started {
 		return errors.New("already started")
@@ -233,7 +219,8 @@ func (c *Cluster) Start() error {
 		}
 	}
 
-	err := waitFor(c.u.Context(), func() (bool, error) {
+	// TODO: this would be a useful public helper of some kind.
+	err := waitFor(c.ctx, func() (bool, error) {
 		nodes, err := c.client.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
 			return false, err
@@ -277,10 +264,8 @@ func (c *Cluster) Start() error {
 	return nil
 }
 
-var addrRe = regexp.MustCompile("https://.*:6443")
-
 func (c *Cluster) mkKubeClient() error {
-	config, err := clientcmd.BuildConfigFromFlags("", c.kubeconfig)
+	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
 	if err != nil {
 		return err
 	}
@@ -293,8 +278,10 @@ func (c *Cluster) mkKubeClient() error {
 	return nil
 }
 
+var addrRe = regexp.MustCompile("https://.*:6443")
+
 func (c *Cluster) startController() error {
-	addons, err := assembleAddons(c.cfg.NetworkAddon, c.cfg.ExtraAddons)
+	addons, err := assembleAddons(c.cfg.NetworkAddon)
 	if err != nil {
 		return err
 	}
@@ -345,7 +332,7 @@ apiServerCertSANs:
 		return err
 	}
 	kubeconfig = addrRe.ReplaceAll(kubeconfig, []byte("https://127.0.0.1:"+strconv.Itoa(c.controller.ForwardedPort(6443))))
-	if err := ioutil.WriteFile(c.kubeconfig, kubeconfig, 0600); err != nil {
+	if err := ioutil.WriteFile(c.Kubeconfig(), kubeconfig, 0600); err != nil {
 		return err
 	}
 
@@ -386,22 +373,28 @@ nodeRegistration:
 // Kubeconfig returns the path to a kubectl configuration file with
 // administrator credentials for the cluster.
 func (c *Cluster) Kubeconfig() string {
-	return c.kubeconfig
+	return filepath.Join(c.dir, "kubeconfig")
 }
 
 // KubernetesClient returns a kubernetes client connected to the
 // cluster.
 func (c *Cluster) KubernetesClient() *kubernetes.Clientset {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.client
 }
 
 // Controller returns the VM for the cluster controller node.
 func (c *Cluster) Controller() *VM {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.controller
 }
 
 // Nodes returns the VMs for the cluster nodes.
 func (c *Cluster) Nodes() []*VM {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.nodes
 }
 
@@ -409,27 +402,25 @@ func (c *Cluster) Nodes() []*VM {
 // registry. Within the cluster, the registry is reachable at
 // localhost:30000 on all nodes.
 func (c *Cluster) Registry() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.controller.ForwardedPort(30000)
 }
 
 func (c *Cluster) freeze(freezeDir string) error {
-	bs, err := ioutil.ReadFile(c.kubeconfig)
+	bs, err := ioutil.ReadFile(c.Kubeconfig())
 	if err != nil {
 		return fmt.Errorf("reading kubeconfig: %v", err)
 	}
 
-	cfg := &clusterFreezeConfig{
-		Config:     c.cfg.Copy(),
-		Kubeconfig: bs,
-	}
-	cfg.Config.VMConfig.CommandLog = nil
+	c.cfg.VMConfig.CommandLog = nil
 
-	bs, err = json.MarshalIndent(cfg, "", "  ")
+	bs, err = json.MarshalIndent(c.cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling cluster config: %v", err)
 	}
 
-	if err := ioutil.WriteFile(filepath.Join(freezeDir, "_cluster_"+c.cfg.Name+".json"), bs, 0600); err != nil {
+	if err := ioutil.WriteFile(filepath.Join(c.dir, "cluster.json"), bs, 0600); err != nil {
 		return fmt.Errorf("writing cluster config: %v", err)
 	}
 
@@ -437,15 +428,17 @@ func (c *Cluster) freeze(freezeDir string) error {
 }
 
 func networkAddonBytes(addon string) ([]byte, error) {
-	bs, err := assets.Asset("net/" + addon + ".yaml")
-	if err == nil {
-		return bs, nil
+	if !strings.ContainsAny(addon, "./") {
+		bs, err := assets.Asset("net/" + addon + ".yaml")
+		if err == nil {
+			return bs, nil
+		}
 	}
 
 	return ioutil.ReadFile(addon)
 }
 
-func assembleAddons(networkAddon string, extraAddons []string) ([]byte, error) {
+func assembleAddons(networkAddon string) ([]byte, error) {
 	var out [][]byte
 
 	bs, err := networkAddonBytes(networkAddon)
@@ -454,14 +447,6 @@ func assembleAddons(networkAddon string, extraAddons []string) ([]byte, error) {
 	}
 	out = append(out, bs)
 	out = append(out, assets.MustAsset("registry.yaml"))
-
-	for _, extra := range extraAddons {
-		bs, err = ioutil.ReadFile(extra)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, bs)
-	}
 
 	return bytes.Join(out, []byte("\n---\n")), nil
 }

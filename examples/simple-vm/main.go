@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/signal"
 
@@ -11,6 +12,7 @@ import (
 )
 
 var (
+	dir     = flag.String("universe-dir", "", "directory in which to place the universe")
 	baseImg = flag.String("vm-img", "virtuakube.qcow2", "VM base image")
 	memory  = flag.Int("memory", 1024, "amount of memory per VM, in MiB")
 	display = flag.Bool("display", false, "create display windows for each VM")
@@ -26,7 +28,20 @@ func main() {
 }
 
 func run() error {
-	universe, err := virtuakube.New(context.Background())
+	udir := *dir
+	if udir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		tmp, err := ioutil.TempDir(wd, "vkube")
+		if err != nil {
+			return err
+		}
+		udir = tmp
+	}
+
+	universe, err := virtuakube.New(context.Background(), udir)
 	if err != nil {
 		return fmt.Errorf("Creating universe: %v", err)
 	}
@@ -44,6 +59,7 @@ func run() error {
 
 	vm, err := universe.NewVM(&virtuakube.VMConfig{
 		Image:        *baseImg,
+		Hostname:     "foo",
 		MemoryMiB:    *memory,
 		PortForwards: map[int]bool{22: true},
 		CommandLog:   os.Stdout,
@@ -65,9 +81,8 @@ Hit ctrl+C to shut down.
 `, vm.ForwardedPort(22))
 
 	if err := universe.Wait(context.Background()); err != nil {
-		return fmt.Errorf("Waiting for universe to end: %v", err)
+		return fmt.Errorf("waiting for universe to end: %v", err)
 	}
 
-	fmt.Println("Shutting down.")
 	return nil
 }
