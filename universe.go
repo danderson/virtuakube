@@ -106,6 +106,7 @@ func Thaw(ctx context.Context, dir string) (*Universe, error) {
 		return nil, err
 	}
 
+	// Thaw all VMs.
 	f, err := os.Open(filepath.Join(u.dir, "vm"))
 	if err != nil {
 		return nil, err
@@ -117,23 +118,36 @@ func Thaw(ctx context.Context, dir string) (*Universe, error) {
 		return nil, err
 	}
 
-	vms := make([]*VM, 0, len(vmPaths))
 	for _, vmPath := range vmPaths {
-		if _, err := u.thawVM(vmPath.Name()); err != nil {
+		vm, err := u.thawVM(vmPath.Name())
+		if err != nil {
 			return nil, err
 		}
-	}
-	for _, vm := range vms {
 		if err := vm.boot(); err != nil {
 			return nil, err
 		}
+		u.vms[vmPath.Name()] = vm
 	}
 
-	// for _, name := range cfg.Clusters {
-	// 	if _, err := u.thawCluster(freezeDir, name); err != nil {
-	// 		return nil, fmt.Errorf("thawing cluster %q: %v", name, err)
-	// 	}
-	// }
+	// Thaw all clusters
+	f, err = os.Open(filepath.Join(u.dir, "cluster"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	clusterPaths, err := f.Readdir(0)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, clusterPath := range clusterPaths {
+		cluster, err := u.thawCluster(clusterPath.Name())
+		if err != nil {
+			return nil, fmt.Errorf("thawing cluster %q: %v", clusterPath.Name(), err)
+		}
+		u.clusters[clusterPath.Name()] = cluster
+	}
 
 	return u, nil
 }
@@ -222,7 +236,7 @@ func (u *Universe) Close() error {
 // Freeze checkpoints the universe, such that it can be thawed back
 // into the same state later. When Freeze returns, the universe is no
 // longer running or usable until Thaw is used to resume it.
-func (u *Universe) Freeze(freezeDir string) error {
+func (u *Universe) Freeze() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.closed {
@@ -237,12 +251,12 @@ func (u *Universe) Freeze(freezeDir string) error {
 		}
 	}
 
-	// for name, cluster := range u.clusters {
-	// 	if err := cluster.freeze(freezeDir); err != nil {
-	// 		u.closeErr = fmt.Errorf("freezing cluster %q: %v", name, err)
-	// 		return u.closeErr
-	// 	}
-	// }
+	for name, cluster := range u.clusters {
+		if err := cluster.freeze(); err != nil {
+			u.closeErr = fmt.Errorf("freezing cluster %q: %v", name, err)
+			return u.closeErr
+		}
+	}
 
 	// By now all VMs should have shutdown during their freeze. Kill
 	// remaining things.

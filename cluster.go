@@ -407,7 +407,7 @@ func (c *Cluster) Registry() int {
 	return c.controller.ForwardedPort(30000)
 }
 
-func (c *Cluster) freeze(freezeDir string) error {
+func (c *Cluster) freeze() error {
 	bs, err := ioutil.ReadFile(c.Kubeconfig())
 	if err != nil {
 		return fmt.Errorf("reading kubeconfig: %v", err)
