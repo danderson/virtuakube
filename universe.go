@@ -126,17 +126,14 @@ func Thaw(ctx context.Context, dir string) (*Universe, error) {
 		return nil, err
 	}
 
-	// thaw all VMs concurrently.
+	// thaw all VMs concurrently. This is the expensive step where
+	// they struggle to load their huge memory snapshots. At the end
+	// of thaw, they're fully loaded, but with their CPUs stopped.
 	res := make(chan error, len(vmPaths))
 	for _, vmPath := range vmPaths {
 		go func(name string) {
 			vm, err := u.thawVM(name)
 			if err != nil {
-				res <- err
-				return
-			}
-
-			if err := vm.boot(); err != nil {
 				res <- err
 				return
 			}
@@ -153,7 +150,16 @@ func Thaw(ctx context.Context, dir string) (*Universe, error) {
 		}
 	}
 
-	// Thaw all clusters
+	// Now that the expensive load is done, blow through all VMs and
+	// restart their CPUs in rapid succession, to keep the clock skew
+	// between VMs minimal.
+	for _, vmPath := range vmPaths {
+		if err := u.VM(vmPath.Name()).boot(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Thaw all cluster objects, now that the cluster VMs are running.
 	f, err = os.Open(filepath.Join(u.dir, "cluster"))
 	if err != nil {
 		return nil, err
