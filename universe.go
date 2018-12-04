@@ -87,6 +87,14 @@ func New(ctx context.Context, dir string) (*Universe, error) {
 		NextIPv4: net.ParseIP("172.20.0.1"),
 		NextIPv6: net.ParseIP("fd00::1"),
 	}
+
+	if err := os.Mkdir(filepath.Join(dir, "vm"), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(filepath.Join(dir, "cluster"), 0700); err != nil {
+		return nil, err
+	}
+
 	return mkUniverse(ctx, cfg, dir)
 }
 
@@ -118,15 +126,30 @@ func Thaw(ctx context.Context, dir string) (*Universe, error) {
 		return nil, err
 	}
 
+	// thaw all VMs concurrently.
+	res := make(chan error, len(vmPaths))
 	for _, vmPath := range vmPaths {
-		vm, err := u.thawVM(vmPath.Name())
-		if err != nil {
+		go func(name string) {
+			vm, err := u.thawVM(name)
+			if err != nil {
+				res <- err
+				return
+			}
+			if err := vm.boot(); err != nil {
+				res <- err
+				return
+			}
+
+			u.mu.Lock()
+			defer u.mu.Unlock()
+			u.vms[name] = vm
+			res <- nil
+		}(vmPath.Name())
+	}
+	for range vmPaths {
+		if err := <-res; err != nil {
 			return nil, err
 		}
-		if err := vm.boot(); err != nil {
-			return nil, err
-		}
-		u.vms[vmPath.Name()] = vm
 	}
 
 	// Thaw all clusters
@@ -181,13 +204,6 @@ func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe
 
 	ret.mu.Lock()
 	defer ret.mu.Unlock()
-
-	if err := os.Mkdir(filepath.Join(dir, "vm"), 0700); err != nil {
-		return nil, err
-	}
-	if err := os.Mkdir(filepath.Join(dir, "cluster"), 0700); err != nil {
-		return nil, err
-	}
 
 	if err := ret.swtch.Start(); err != nil {
 		shutdown()
