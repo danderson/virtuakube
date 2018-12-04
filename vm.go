@@ -145,6 +145,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 		"-nographic",
 		"-serial", "null",
 		"-monitor", "stdio",
+		"-S",
 	)
 	if !cfg.Config.NoKVM {
 		ret.cmd.Args = append(ret.cmd.Args, "-enable-kvm")
@@ -171,9 +172,23 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 	}
 	ret.monOut = monOut
 
+	if err := ret.cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() {
+		ret.cmd.Wait()
+		ret.shutdown()
+	}()
+
+	if _, err := readToPrompt(ret.monOut); err != nil {
+		ret.shutdown()
+		return nil, err
+	}
+
 	u.mu.Lock()
-	u.mu.Unlock()
+	defer u.mu.Unlock()
 	if u.vms[cfg.Config.Hostname] != nil {
+		ret.shutdown()
 		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Config.Hostname)
 	}
 	u.vms[cfg.Config.Hostname] = ret
@@ -276,15 +291,24 @@ func (v *VM) boot() error {
 		return errors.New("already started")
 	}
 
-	if err := v.cmd.Start(); err != nil {
+	// if err := v.cmd.Start(); err != nil {
+	// 	return err
+	// }
+	// v.started = true
+	// go func() {
+	// 	v.cmd.Wait()
+	// 	v.shutdown()
+	// }()
+
+	// if _, err := readToPrompt(v.monOut); err != nil {
+	// 	v.shutdown()
+	// 	return err
+	// }
+
+	if _, err := fmt.Fprintf(v.monIn, "cont\n"); err != nil {
+		v.shutdown()
 		return err
 	}
-	v.started = true
-	go func() {
-		v.cmd.Wait()
-		v.shutdown()
-	}()
-
 	if _, err := readToPrompt(v.monOut); err != nil {
 		v.shutdown()
 		return err

@@ -135,6 +135,7 @@ func Thaw(ctx context.Context, dir string) (*Universe, error) {
 				res <- err
 				return
 			}
+
 			if err := vm.boot(); err != nil {
 				res <- err
 				return
