@@ -74,13 +74,12 @@ func run() error {
 	defer universe.Close()
 
 	cfg := &virtuakube.ClusterConfig{
-		Name:     "example",
+		Name:     "freeze-example",
 		NumNodes: *nodes,
 		VMConfig: &virtuakube.VMConfig{
-			Image:        *baseImg,
-			MemoryMiB:    *memory,
-			PortForwards: map[int]bool{22: true},
-			NoKVM:        !*kvm,
+			Image:     *baseImg,
+			MemoryMiB: *memory,
+			NoKVM:     !*kvm,
 		},
 		NetworkAddon: *networkAddon,
 	}
@@ -92,27 +91,19 @@ func run() error {
 
 	cluster, err := universe.NewCluster(cfg)
 	if err != nil {
-		return fmt.Errorf("Creating cluster: %v", err)
+		return fmt.Errorf("creating cluster: %v", err)
 	}
 	if err = cluster.Start(); err != nil {
-		return fmt.Errorf("Starting cluster: %v", err)
+		return fmt.Errorf("starting cluster: %v", err)
 	}
 
-	fmt.Printf("Cluster created in %s. Resources available:\n\n", time.Since(start).Truncate(time.Second))
-	for _, cluster := range universe.Clusters() {
-		fmt.Printf("Cluster %q: export KUBECONFIG=%q\n", cluster.Name(), cluster.Kubeconfig())
-	}
-	fmt.Println("")
-	for _, vm := range universe.VMs() {
-		fmt.Printf("VM %q: ssh -p%d root@localhost\n", vm.Hostname(), vm.ForwardedPort(22))
-	}
-	fmt.Println("\nHit ctrl+C to shut down")
+	fmt.Println("Freezing universe...")
 
-	if err := universe.Wait(context.Background()); err != nil {
-		return fmt.Errorf("waiting for universe to end: %v", err)
+	if err := universe.Freeze(); err != nil {
+		return fmt.Errorf("freezing universe: %v", err)
 	}
 
-	fmt.Println("Shutting down...")
+	fmt.Printf("Universe frozen in %s. Use examples/thaw-universe to restore.\n", time.Since(start).Truncate(time.Second))
 
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/signal"
+	"time"
 
 	"go.universe.tf/virtuakube"
 )
@@ -16,6 +17,7 @@ var (
 	baseImg = flag.String("vm-img", "virtuakube.qcow2", "VM base image")
 	memory  = flag.Int("memory", 1024, "amount of memory per VM, in MiB")
 	display = flag.Bool("display", false, "create display windows for each VM")
+	verbose = flag.Bool("verbose", false, "show commands being executed during cluster startup")
 	kvm     = flag.Bool("kvm", true, "use KVM hardware acceleration")
 )
 
@@ -28,8 +30,10 @@ func main() {
 }
 
 func run() error {
-	udir := *dir
-	if udir == "" {
+	start := time.Now()
+
+	universeDir := *dir
+	if universeDir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
 			return err
@@ -38,51 +42,64 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		udir = tmp
+		universeDir = tmp
 	}
 
-	universe, err := virtuakube.New(context.Background(), udir)
-	if err != nil {
-		return fmt.Errorf("Creating universe: %v", err)
-	}
-	defer universe.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
+	// Handle ctrl+C by cancelling the context, which will shut down
+	// everything in the universe.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
 	go func() {
 		select {
 		case <-stop:
-			universe.Close()
-		case <-universe.Context().Done():
+			cancel()
+		case <-ctx.Done():
 		}
 	}()
 
-	vm, err := universe.NewVM(&virtuakube.VMConfig{
-		Image:        *baseImg,
-		Hostname:     "foo",
-		MemoryMiB:    *memory,
-		PortForwards: map[int]bool{22: true},
-		CommandLog:   os.Stdout,
-		NoKVM:        !*kvm,
-	})
+	fmt.Println("Creating universe...")
+
+	universe, err := virtuakube.New(ctx, universeDir)
+	if err != nil {
+		return fmt.Errorf("Creating universe: %v", err)
+	}
+	defer universe.Close()
+
+	cfg := &virtuakube.VMConfig{
+		Image:     *baseImg,
+		Hostname:  "example",
+		MemoryMiB: *memory,
+		NoKVM:     !*kvm,
+	}
+	if *verbose {
+		cfg.CommandLog = os.Stdout
+	}
+
+	fmt.Println("Creating VM...")
+
+	vm, err := universe.NewVM(cfg)
 	if err != nil {
 		return fmt.Errorf("Creating VM: %v", err)
 	}
-
 	if err = vm.Start(); err != nil {
 		return fmt.Errorf("Starting VM: %v", err)
 	}
 
-	fmt.Printf(`VM is up. SSH access (password is "root"):
+	fmt.Printf(`VM created in %s. SSH access (password is "root"):
 
 ssh -p%d root@localhost
 
 Hit ctrl+C to shut down.
-`, vm.ForwardedPort(22))
+`, time.Since(start).Truncate(time.Millisecond), vm.ForwardedPort(22))
 
 	if err := universe.Wait(context.Background()); err != nil {
 		return fmt.Errorf("waiting for universe to end: %v", err)
 	}
+
+	fmt.Println("Shutting down...")
 
 	return nil
 }
