@@ -2,3 +2,21 @@ do -snapshot stuff to make freezing more useful
 adjust RTC settings for vms
 MetalLB tests!
 
+
+New API:
+ - vkube Open() and Create(), similar to os.File. Either create an
+   empty universe, or open an existing one.
+   - Does Opening an existing universe immediately resume everything
+     inside it? I think so?
+ - universe.Close() stops everything, reverts everything to savepoint.
+ - universe.Save() stops everything, but snapshots everything so the
+   next Open() will resume from this moment.
+ - universe.Destroy() stops everything, deletes everything. Nuke the
+   universe.
+ - Images are a component of universes. Read-only images that serve as
+   bases for several VMs.
+ - VM references an Image as its base.
+ - VMs run in -snapshot mode, so Close() is a pkill + nothing. Save is
+   a stop+savevm+commit_all+quit. Destroy is Close() + rm -rf.
+ - There's no multiple snapshots. The way you persistently branch the
+   universe is cp -R.
