@@ -370,6 +370,10 @@ nodeRegistration:
 	return nil
 }
 
+func (c *Cluster) Name() string {
+	return c.cfg.Name
+}
+
 // Kubeconfig returns the path to a kubectl configuration file with
 // administrator credentials for the cluster.
 func (c *Cluster) Kubeconfig() string {

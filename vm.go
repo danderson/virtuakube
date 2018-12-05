@@ -478,6 +478,10 @@ func (v *VM) freeze() error {
 	return nil
 }
 
+func (v *VM) Hostname() string {
+	return v.cfg.Config.Hostname
+}
+
 // ForwardedPort returns the port on localhost that maps to the given
 // port on the VM.
 func (v *VM) ForwardedPort(dst int) int {

@@ -319,10 +319,34 @@ func (u *Universe) VM(hostname string) *VM {
 	return u.vms[hostname]
 }
 
+func (u *Universe) VMs() []*VM {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	ret := make([]*VM, 0, len(u.vms))
+
+	for _, vm := range u.vms {
+		ret = append(ret, vm)
+	}
+
+	return ret
+}
+
 func (u *Universe) Cluster(name string) *Cluster {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.clusters[name]
+}
+
+func (u *Universe) Clusters() []*Cluster {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	ret := make([]*Cluster, 0, len(u.clusters))
+
+	for _, cluster := range u.clusters {
+		ret = append(ret, cluster)
+	}
+
+	return ret
 }
 
 func (u *Universe) ipv4() net.IP {
