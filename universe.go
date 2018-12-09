@@ -52,11 +52,11 @@ type Universe struct {
 	ctx      context.Context
 	shutdown context.CancelFunc
 
+	mu sync.Mutex
+
 	// Network resources for the universe. VMs request these on
 	// creation.
 	cfg *universeConfig
-
-	mu sync.Mutex
 
 	// Resources in the universe: a virtual switch, some VMs, some k8s
 	// clusters.
