@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 var universeTools = []string{
@@ -249,6 +250,9 @@ func mkUniverse(cfg *universeConfig, dir string) (*Universe, error) {
 		switchSock: sock,
 	}
 	ret.cfg.NextIPv4 = ret.cfg.NextIPv4.To4()
+	ret.swtch.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 
 	ret.mu.Lock()
 	defer ret.mu.Unlock()
