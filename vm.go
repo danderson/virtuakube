@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -95,19 +96,10 @@ type VM struct {
 
 func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
 	if cfg == nil || cfg.ImageName == "" {
-		return nil, errors.New("no Image in VMConfig")
+		return nil, errors.New("no ImageName in VMConfig")
 	}
 
 	cfg = cfg.Copy()
-
-	bp, err := filepath.Abs(cfg.ImageName)
-	if err != nil {
-		return nil, err
-	}
-	if _, err = os.Stat(bp); err != nil {
-		return nil, err
-	}
-	cfg.ImageName = bp
 
 	if cfg.Hostname == "" {
 		cfg.Hostname = randomHostname()
@@ -160,6 +152,9 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 	if resume {
 		ret.cmd.Args = append(ret.cmd.Args, "-loadvm", "snap")
 	}
+	ret.cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 
 	monIn, err := ret.cmd.StdinPipe()
 	if err != nil {
@@ -171,7 +166,6 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 		return nil, fmt.Errorf("creating stdout pipe: %v", err)
 	}
 	ret.monOut = monOut
-	ret.cmd.Stderr = os.Stderr
 
 	if err := ret.cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting VM: %v", err)

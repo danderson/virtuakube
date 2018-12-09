@@ -319,3 +319,22 @@ func CustomizePreloadK8sImages(v *VM) error {
 
 	return nil
 }
+
+func CustomizeScript(path string) func(*VM) error {
+	return func(v *VM) error {
+		bs, err := ioutil.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading script %q: %v", path, err)
+		}
+
+		if err := v.WriteFile("/tmp/script", bs); err != nil {
+			return fmt.Errorf("writing script to VM: %v", err)
+		}
+
+		return v.RunMultiple(
+			"chmod +x /tmp/script",
+			"/tmp/script",
+			"rm /tmp/script",
+		)
+	}
+}

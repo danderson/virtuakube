@@ -1,8 +1,9 @@
-adjust contexts in examples so that ^C doesn't always nuke the VMs, otherwise save doesn't work.
+CLI tool instead of standalone examples
+Close doesn't sequence shutdown properly any more, leaves dangling VMs and switches
 adjust RTC settings for vms
-sequence shutdowns better so that we separate "I asked things to terminate" from "everything is done and cleaned up"
 MetalLB tests!
 Freezing a VM if you never started it will result in a broken VM on thaw. Unusual case but I should fix it someday.
+Stop storing contexts in structs, that's naughy and defeats static analysis tools
 
 New API:
  - vkube Open() and Create(), similar to os.File. Either create an
