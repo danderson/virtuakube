@@ -13,27 +13,28 @@ var newimageCmd = &cobra.Command{
 	Use:   "newimage",
 	Short: "Create a base VM disk image",
 	Args:  cobra.NoArgs,
-	Run:   withUniverse(newimage),
+	Run:   withUniverse(&imageFlags.universe, newimage),
 }
 
 var imageFlags = struct {
-	name    string
-	script  string
-	k8s     bool
-	prepull bool
+	universe universeFlags
+	name     string
+	script   string
+	k8s      bool
+	prepull  bool
 }{}
 
 func init() {
 	rootCmd.AddCommand(newimageCmd)
 
-	addRootFlags(newimageCmd, false, true)
+	addUniverseFlags(newimageCmd, &imageFlags.universe, false, true)
 	newimageCmd.Flags().StringVar(&imageFlags.name, "name", "", "name of the new disk image")
 	newimageCmd.Flags().StringVar(&imageFlags.script, "script", "", "path to a shell script to customize the disk image")
 	newimageCmd.Flags().BoolVar(&imageFlags.k8s, "install-k8s", true, "install prerequisites for Kubernetes cluster setup")
 	newimageCmd.Flags().BoolVar(&imageFlags.prepull, "prepull-k8s", true, "pre-pull docker images required to run Kubernetes")
 }
 
-func newimage(u *virtuakube.Universe) error {
+func newimage(u *virtuakube.Universe, verbose bool) error {
 	if imageFlags.prepull && !imageFlags.k8s {
 		return errors.New("Cannot prepull k8s images if I'm not installing k8s")
 	}
@@ -50,7 +51,7 @@ func newimage(u *virtuakube.Universe) error {
 	if imageFlags.script != "" {
 		cfg.CustomizeFuncs = append(cfg.CustomizeFuncs, virtuakube.CustomizeScript(imageFlags.script))
 	}
-	if rootFlags.verbose {
+	if verbose {
 		cfg.BuildLog = os.Stdout
 	}
 

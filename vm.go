@@ -71,10 +71,8 @@ type VM struct {
 
 	dir string
 
-	// Context for the lifetime of the VM. Canceled when the VM shuts
-	// down or the universe ends.
-	ctx      context.Context
-	shutdown context.CancelFunc
+	// Closed when the VM has exited.
+	stopped chan bool
 
 	mu sync.Mutex
 
@@ -114,16 +112,12 @@ func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
 }
 
 func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) (*VM, error) {
-	ctx, cancel := context.WithCancel(u.Context())
-
 	ret := &VM{
-		cfg:      cfg,
-		dir:      dir,
-		ctx:      ctx,
-		shutdown: cancel,
+		cfg:     cfg,
+		stopped: make(chan bool),
+		dir:     dir,
 	}
-	ret.cmd = exec.CommandContext(
-		ret.ctx,
+	ret.cmd = exec.Command(
 		"qemu-system-x86_64",
 		"-m", strconv.Itoa(cfg.Config.MemoryMiB),
 		"-device", "virtio-net,netdev=net0,mac=52:54:00:12:34:56",
@@ -172,18 +166,18 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 	}
 	go func() {
 		ret.cmd.Wait()
-		ret.shutdown()
+		close(ret.stopped)
 	}()
 
 	if _, err := readToPrompt(ret.monOut); err != nil {
-		ret.shutdown()
+		ret.Close()
 		return nil, fmt.Errorf("reading qemu monitor prompt: %v", err)
 	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.vms[cfg.Config.Hostname] != nil {
-		ret.shutdown()
+		ret.closeWithLock()
 		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Config.Hostname)
 	}
 	u.vms[cfg.Config.Hostname] = ret
@@ -315,16 +309,22 @@ func (v *VM) boot() error {
 	}
 
 	if _, err := fmt.Fprintf(v.monIn, "cont\n"); err != nil {
-		v.shutdown()
+		v.closeWithLock()
 		return err
 	}
 	if _, err := readToPrompt(v.monOut); err != nil {
-		v.shutdown()
+		v.closeWithLock()
 		return err
 	}
 
 	// Try dialing SSH
-	for v.ctx.Err() == nil {
+	for {
+		select {
+		case <-v.stopped:
+			return errors.New("timeout")
+		default:
+		}
+
 		sshCfg := &ssh.ClientConfig{
 			User:            "root",
 			Auth:            []ssh.AuthMethod{ssh.Password("root")},
@@ -341,9 +341,6 @@ func (v *VM) boot() error {
 		v.ssh = client
 		break
 	}
-	if v.ctx.Err() != nil {
-		return errors.New("timeout")
-	}
 
 	return nil
 }
@@ -351,7 +348,7 @@ func (v *VM) boot() error {
 // Wait waits for the VM to shut down.
 func (v *VM) Wait(ctx context.Context) error {
 	select {
-	case <-v.ctx.Done():
+	case <-v.stopped:
 		return nil
 	case <-ctx.Done():
 		return errors.New("timeout")
@@ -426,13 +423,16 @@ func (v *VM) ReadFile(path string) ([]byte, error) {
 func (v *VM) Close() error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	return v.closeWithLock()
+}
+
+func (v *VM) closeWithLock() error {
 	if v.closed {
 		return nil
 	}
 	v.closed = true
-
-	v.shutdown()
-
+	v.cmd.Process.Kill()
+	<-v.stopped
 	return nil
 }
 
@@ -468,7 +468,7 @@ func (v *VM) freeze() error {
 	if _, err := fmt.Fprintf(v.monIn, "quit\n"); err != nil {
 		return err
 	}
-	<-v.ctx.Done()
+	<-v.stopped
 
 	// Clear CommandLog, since we can't persist that, and we just
 	// stopped the VM anyway.

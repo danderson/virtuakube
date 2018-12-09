@@ -110,7 +110,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	}
 
 	iidPath := filepath.Join(tmp, "iid")
-	cmd := exec.CommandContext(u.ctx, "docker", "build", "--iidfile", iidPath, tmp)
+	cmd := exec.Command("docker", "build", "--iidfile", iidPath, tmp)
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
@@ -123,8 +123,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	}
 
 	cidPath := filepath.Join(tmp, "cid")
-	cmd = exec.CommandContext(
-		u.ctx,
+	cmd = exec.Command(
 		"docker", "run",
 		"--cidfile", cidPath,
 		fmt.Sprintf("--mount=type=bind,source=%s,destination=/tmp/ctx", tmp),
@@ -143,8 +142,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	}
 
 	tarPath := filepath.Join(tmp, "fs.tar")
-	cmd = exec.CommandContext(
-		u.ctx,
+	cmd = exec.Command(
 		"docker", "export",
 		"-o", tarPath,
 		string(cid),
@@ -156,8 +154,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	}
 
 	imgPath := filepath.Join(tmp, "fs.img")
-	cmd = exec.CommandContext(
-		u.ctx,
+	cmd = exec.Command(
 		"virt-make-fs",
 		"--partition", "--format=qcow2",
 		"--type=ext4", "--size=10G",
@@ -173,7 +170,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 		return nil, fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	tmpu, err := Create(u.ctx, filepath.Join(tmp, "universe"))
+	tmpu, err := Create(filepath.Join(tmp, "universe"))
 	if err != nil {
 		return nil, fmt.Errorf("creating virtuakube instance: %v", err)
 	}
@@ -236,8 +233,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 		path: filepath.Join(u.dir, "image", cfg.Name),
 	}
 
-	cmd = exec.CommandContext(
-		u.ctx,
+	cmd = exec.Command(
 		"qemu-img", "convert",
 		"-O", "qcow2",
 		imgPath, ret.path,

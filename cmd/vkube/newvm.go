@@ -12,10 +12,11 @@ var newvmCmd = &cobra.Command{
 	Use:   "newvm",
 	Short: "Create a standalone VM",
 	Args:  cobra.NoArgs,
-	Run:   withUniverse(newvm),
+	Run:   withUniverse(&vmFlags.universe, newvm),
 }
 
 var vmFlags = struct {
+	universe universeFlags
 	image    string
 	hostname string
 	memory   int
@@ -29,17 +30,17 @@ func addVMFlags(cmd *cobra.Command) {
 
 func init() {
 	rootCmd.AddCommand(newvmCmd)
-	addRootFlags(newvmCmd, true, false)
+	addUniverseFlags(newvmCmd, &vmFlags.universe, true, false)
 	addVMFlags(newvmCmd)
 }
 
-func newvm(u *virtuakube.Universe) error {
+func newvm(u *virtuakube.Universe, verbose bool) error {
 	cfg := &virtuakube.VMConfig{
 		ImageName: vmFlags.image,
 		Hostname:  vmFlags.hostname,
 		MemoryMiB: vmFlags.memory,
 	}
-	if rootFlags.verbose {
+	if verbose {
 		cfg.CommandLog = os.Stdout
 	}
 

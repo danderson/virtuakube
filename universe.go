@@ -47,10 +47,7 @@ type Universe struct {
 	// VDE switch control socket, used by VMs to attach to the switch.
 	switchSock string
 
-	// Context for the lifetime of the universe. It's canceled when
-	// the universe is closed.
-	ctx      context.Context
-	shutdown context.CancelFunc
+	closedCh chan bool
 
 	mu sync.Mutex
 
@@ -83,7 +80,7 @@ type universeConfig struct {
 	NextIPv6 net.IP
 }
 
-func Create(ctx context.Context, dir string) (*Universe, error) {
+func Create(dir string) (*Universe, error) {
 	cfg := &universeConfig{
 		NextPort: 50000,
 		NextIPv4: net.ParseIP("172.20.0.1"),
@@ -108,7 +105,7 @@ func Create(ctx context.Context, dir string) (*Universe, error) {
 		return nil, err
 	}
 
-	u, err := mkUniverse(ctx, cfg, dir)
+	u, err := mkUniverse(cfg, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +117,7 @@ func Create(ctx context.Context, dir string) (*Universe, error) {
 	return u, nil
 }
 
-func Open(ctx context.Context, dir string) (*Universe, error) {
+func Open(dir string) (*Universe, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -136,7 +133,7 @@ func Open(ctx context.Context, dir string) (*Universe, error) {
 		return nil, err
 	}
 
-	u, err := mkUniverse(ctx, &cfg, dir)
+	u, err := mkUniverse(&cfg, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -227,19 +224,16 @@ func Open(ctx context.Context, dir string) (*Universe, error) {
 	return u, nil
 }
 
-func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe, error) {
+func mkUniverse(cfg *universeConfig, dir string) (*Universe, error) {
 	if err := checkTools(universeTools); err != nil {
 		return nil, err
 	}
-
-	ctx, shutdown := context.WithCancel(ctx)
 
 	sock := filepath.Join(dir, "switch")
 
 	ret := &Universe{
 		dir:         dir,
-		ctx:         ctx,
-		shutdown:    shutdown,
+		closedCh:    make(chan bool),
 		cfg:         cfg,
 		images:      map[string]*Image{},
 		vms:         map[string]*VM{},
@@ -247,8 +241,7 @@ func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe
 		newImages:   map[string]bool{},
 		newVMs:      map[string]bool{},
 		newClusters: map[string]bool{},
-		swtch: exec.CommandContext(
-			ctx,
+		swtch: exec.Command(
 			"vde_switch",
 			"--sock", sock,
 			"-m", "0600",
@@ -261,7 +254,7 @@ func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe
 	defer ret.mu.Unlock()
 
 	if err := ret.swtch.Start(); err != nil {
-		shutdown()
+		ret.Close()
 		return nil, err
 	}
 	// Destroy the universe if the virtual switch exits.
@@ -269,19 +262,8 @@ func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe
 		ret.swtch.Wait()
 		ret.Close()
 	}()
-	// Destroy the universe if the parent context cancels.
-	go func() {
-		<-ctx.Done()
-		ret.Close()
-	}()
 
 	return ret, nil
-}
-
-// Context returns a context that gets canceled when the universe is
-// destroyed.
-func (u *Universe) Context() context.Context {
-	return u.ctx
 }
 
 func (u *Universe) Close() error {
@@ -290,8 +272,22 @@ func (u *Universe) Close() error {
 	if u.closed {
 		return u.closeErr
 	}
+
+	u.closeWithLock()
+	close(u.closedCh)
+	return u.closeErr
+}
+
+func (u *Universe) closeWithLock() {
+	// Assumes u hasn't been closed already. Caller's responsibility
+	// to check that.
 	u.closed = true
-	u.shutdown()
+
+	for _, vm := range u.vms {
+		if err := vm.Close(); err != nil {
+			u.closeErr = err
+		}
+	}
 
 	for image, destroy := range u.newImages {
 		if !destroy {
@@ -317,8 +313,6 @@ func (u *Universe) Close() error {
 			u.closeErr = err
 		}
 	}
-
-	return nil
 }
 
 func (u *Universe) Destroy() error {
@@ -327,13 +321,14 @@ func (u *Universe) Destroy() error {
 	if u.closed {
 		return u.closeErr
 	}
-	u.closed = true
-	u.shutdown()
+
+	u.closeWithLock()
 
 	if err := os.RemoveAll(u.dir); err != nil {
 		u.closeErr = err
 	}
 
+	close(u.closedCh)
 	return u.closeErr
 }
 
@@ -343,7 +338,6 @@ func (u *Universe) Save() error {
 	if u.closed {
 		return u.closeErr
 	}
-	u.closed = true
 
 	// VM saving is slow, so parallelize it.
 	errs := make(chan error, len(u.vms))
@@ -373,14 +367,19 @@ func (u *Universe) Save() error {
 	}
 
 	// By now all VMs should have shutdown during their freeze. Kill
-	// remaining things.
-	u.shutdown()
+	// remaining things. But clear all the new* maps so that
+	// closeWithLock doesn't delete stuff we just saved.
+	u.newImages = nil
+	u.newVMs = nil
+	u.newClusters = nil
+	u.closeWithLock()
 
 	if err := u.writeUniverseConfig(); err != nil {
 		u.closeErr = err
 		return u.closeErr
 	}
 
+	close(u.closedCh)
 	return nil
 }
 
@@ -398,7 +397,7 @@ func (u *Universe) writeUniverseConfig() error {
 // Wait waits for the universe to be Closed, Saved or Destroyed.
 func (u *Universe) Wait(ctx context.Context) error {
 	select {
-	case <-u.ctx.Done():
+	case <-u.closedCh:
 		return nil
 	case <-ctx.Done():
 		return errors.New("timeout")

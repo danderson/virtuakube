@@ -2,7 +2,6 @@ package virtuakube
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -55,10 +54,6 @@ type Cluster struct {
 	cfg *ClusterConfig
 
 	dir string
-
-	// Context for the lifetime of the cluster. Canceled when the
-	// universe ends.
-	ctx context.Context
 
 	mu sync.Mutex
 
@@ -124,7 +119,6 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	ret := &Cluster{
 		cfg: cfg,
 		dir: dir,
-		ctx: u.ctx,
 	}
 
 	controllerCfg := cfg.VMConfig.Copy()
@@ -175,7 +169,6 @@ func (u *Universe) thawCluster(name string) (*Cluster, error) {
 	ret := &Cluster{
 		cfg:     &cfg,
 		dir:     dir,
-		ctx:     u.ctx,
 		started: true,
 	}
 
@@ -221,7 +214,7 @@ func (c *Cluster) Start() error {
 	}
 
 	// TODO: this would be a useful public helper of some kind.
-	err := waitFor(c.ctx, func() (bool, error) {
+	err := waitFor(func() (bool, error) {
 		nodes, err := c.client.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
 			return false, err
@@ -470,15 +463,8 @@ func nodeReady(node corev1.Node) bool {
 	return false
 }
 
-func waitFor(ctx context.Context, test func() (bool, error)) error {
-	done := ctx.Done()
+func waitFor(test func() (bool, error)) error {
 	for {
-		select {
-		case <-done:
-			return errors.New("timeout")
-		default:
-		}
-
 		ok, err := test()
 		if err != nil {
 			return err

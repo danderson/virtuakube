@@ -12,49 +12,61 @@ import (
 	"go.universe.tf/virtuakube"
 )
 
-type universeFunc func(*virtuakube.Universe) error
+type universeFlags struct {
+	dir     string
+	verbose bool
+	wait    bool
+	save    bool
+}
 
-func withUniverse(do universeFunc) func(*cobra.Command, []string) {
+func addUniverseFlags(cmd *cobra.Command, flags *universeFlags, wait, save bool) {
+	cmd.Flags().StringVarP(&flags.dir, "universe", "u", "", "directory containing the universe")
+	cmd.Flags().BoolVarP(&flags.verbose, "verbose", "v", false, "show commands being executed under the hood")
+	cmd.Flags().BoolVarP(&flags.wait, "wait", "w", wait, "wait for ctrl+C before exiting")
+	cmd.Flags().BoolVarP(&flags.save, "save", "s", save, "save the universe on exit")
+	cmd.MarkFlagRequired("universe")
+}
+
+type universeFunc func(*virtuakube.Universe, bool) error
+
+func withUniverse(flags *universeFlags, do universeFunc) func(*cobra.Command, []string) {
 	return func(_ *cobra.Command, _ []string) {
-		if err := runDoWithUniverse(do); err != nil {
+		if err := runDoWithUniverse(flags, do); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 	}
 }
 
-func runDoWithUniverse(do universeFunc) error {
+func runDoWithUniverse(flags *universeFlags, do universeFunc) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	signalCtx, signalCancel := context.WithCancel(ctx)
-	defer signalCancel()
 
 	// Handle ctrl+C by cancelling the context, which will shut down
 	// everything in the universe.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
 	go func() {
-		defer signalCancel()
+		defer cancel()
 		select {
 		case <-stop:
-		case <-signalCtx.Done():
+		case <-ctx.Done():
 		}
 	}()
 
 	start := time.Now()
 
-	u, err := openOrCreateUniverse(ctx, rootFlags.universeDir)
+	u, err := openOrCreateUniverse(flags.dir)
 	if err != nil {
 		return fmt.Errorf("Getting universe: %v", err)
 	}
 	defer u.Close()
 
-	if err := do(u); err != nil {
+	if err := do(u, flags.verbose); err != nil {
 		return err
 	}
 
-	if rootFlags.wait {
+	if flags.wait {
 		d := time.Since(start)
 		switch {
 		case d < time.Second:
@@ -73,10 +85,10 @@ func runDoWithUniverse(do universeFunc) error {
 		}
 
 		fmt.Println("\nHit ctrl+C to shut down")
-		<-signalCtx.Done()
+		<-ctx.Done()
 	}
 
-	if rootFlags.save {
+	if flags.save {
 		fmt.Println("Saving universe...")
 		if err := u.Save(); err != nil {
 			return fmt.Errorf("Saving universe: %v", err)
@@ -93,7 +105,7 @@ func runDoWithUniverse(do universeFunc) error {
 
 // openOrCreateUniverse sets up a universe, either by creating it from
 // scratch, or by opening an existing one.
-func openOrCreateUniverse(ctx context.Context, dir string) (*virtuakube.Universe, error) {
+func openOrCreateUniverse(dir string) (*virtuakube.Universe, error) {
 	if dir == "" {
 		return nil, errors.New("universe directory not specified")
 	}
@@ -106,7 +118,7 @@ func openOrCreateUniverse(ctx context.Context, dir string) (*virtuakube.Universe
 		return nil, err
 	}
 
-	universe, err := cmd(ctx, dir)
+	universe, err := cmd(dir)
 	if err != nil {
 		return nil, fmt.Errorf("getting universe: %v", err)
 	}
