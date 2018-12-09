@@ -315,20 +315,6 @@ func (v *VM) boot() error {
 		return errors.New("already started")
 	}
 
-	// if err := v.cmd.Start(); err != nil {
-	// 	return err
-	// }
-	// v.started = true
-	// go func() {
-	// 	v.cmd.Wait()
-	// 	v.shutdown()
-	// }()
-
-	// if _, err := readToPrompt(v.monOut); err != nil {
-	// 	v.shutdown()
-	// 	return err
-	// }
-
 	if _, err := fmt.Fprintf(v.monIn, "cont\n"); err != nil {
 		v.shutdown()
 		return err
