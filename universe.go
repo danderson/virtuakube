@@ -61,11 +61,13 @@ type Universe struct {
 	// Resources in the universe: a virtual switch, some VMs, some k8s
 	// clusters.
 	swtch    *exec.Cmd
+	images   map[string]*Image
 	vms      map[string]*VM
 	clusters map[string]*Cluster
 
 	// VMs and clusters that were created during this session. Close
 	// will destroy these VMs, Save will persist them.
+	newImages   map[string]bool
 	newVMs      map[string]bool
 	newClusters map[string]bool
 
@@ -88,7 +90,15 @@ func Create(ctx context.Context, dir string) (*Universe, error) {
 		NextIPv6: net.ParseIP("fd00::1"),
 	}
 
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := os.Mkdir(dir, 0700); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(filepath.Join(dir, "image"), 0700); err != nil {
 		return nil, err
 	}
 	if err := os.Mkdir(filepath.Join(dir, "vm"), 0700); err != nil {
@@ -111,6 +121,11 @@ func Create(ctx context.Context, dir string) (*Universe, error) {
 }
 
 func Open(ctx context.Context, dir string) (*Universe, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+
 	bs, err := ioutil.ReadFile(filepath.Join(dir, "universe.json"))
 	if err != nil {
 		return nil, err
@@ -126,8 +141,26 @@ func Open(ctx context.Context, dir string) (*Universe, error) {
 		return nil, err
 	}
 
+	// Recreate all images.
+	f, err := os.Open(filepath.Join(u.dir, "image"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	imagePaths, err := f.Readdir(0)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, imagePath := range imagePaths {
+		u.images[imagePath.Name()] = &Image{
+			path: filepath.Join(u.dir, "image", imagePath.Name()),
+		}
+	}
+
 	// Thaw all VMs.
-	f, err := os.Open(filepath.Join(u.dir, "vm"))
+	f, err = os.Open(filepath.Join(u.dir, "vm"))
 	if err != nil {
 		return nil, err
 	}
@@ -208,8 +241,10 @@ func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe
 		ctx:         ctx,
 		shutdown:    shutdown,
 		cfg:         cfg,
+		images:      map[string]*Image{},
 		vms:         map[string]*VM{},
 		clusters:    map[string]*Cluster{},
+		newImages:   map[string]bool{},
 		newVMs:      map[string]bool{},
 		newClusters: map[string]bool{},
 		swtch: exec.CommandContext(
@@ -258,6 +293,14 @@ func (u *Universe) Close() error {
 	u.closed = true
 	u.shutdown()
 
+	for image, destroy := range u.newImages {
+		if !destroy {
+			continue
+		}
+		if err := os.Remove(u.images[image].path); err != nil {
+			u.closeErr = err
+		}
+	}
 	for hostname, destroy := range u.newVMs {
 		if !destroy {
 			continue
@@ -360,6 +403,12 @@ func (u *Universe) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return errors.New("timeout")
 	}
+}
+
+func (u *Universe) Image(name string) *Image {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.images[name]
 }
 
 func (u *Universe) VM(hostname string) *VM {

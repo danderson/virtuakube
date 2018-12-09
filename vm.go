@@ -24,7 +24,7 @@ import (
 
 // VMConfig is the configuration for a virtual machine.
 type VMConfig struct {
-	Image        string
+	ImageName    string
 	Hostname     string
 	MemoryMiB    int
 	PortForwards map[int]bool
@@ -40,7 +40,7 @@ type VMConfig struct {
 // Copy returns a deep copy of the VM config.
 func (v *VMConfig) Copy() *VMConfig {
 	ret := &VMConfig{
-		Image:        v.Image,
+		ImageName:    v.ImageName,
 		Hostname:     v.Hostname,
 		MemoryMiB:    v.MemoryMiB,
 		PortForwards: make(map[int]bool),
@@ -94,20 +94,20 @@ type VM struct {
 }
 
 func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
-	if cfg == nil || cfg.Image == "" {
+	if cfg == nil || cfg.ImageName == "" {
 		return nil, errors.New("no Image in VMConfig")
 	}
 
 	cfg = cfg.Copy()
 
-	bp, err := filepath.Abs(cfg.Image)
+	bp, err := filepath.Abs(cfg.ImageName)
 	if err != nil {
 		return nil, err
 	}
 	if _, err = os.Stat(bp); err != nil {
 		return nil, err
 	}
-	cfg.Image = bp
+	cfg.ImageName = bp
 
 	if cfg.Hostname == "" {
 		cfg.Hostname = randomHostname()
@@ -210,15 +210,20 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		return nil, fmt.Errorf("creating VM state dir: %v", err)
 	}
 
-	diskPath := cfg.Image
+	diskPath := cfg.ImageName
 	if cfg.kernelPath == "" {
+		img := u.Image(cfg.ImageName)
+		if img == nil {
+			return nil, fmt.Errorf("no such image %q", cfg.ImageName)
+		}
+
 		diskPath = filepath.Join(dir, "disk.qcow2")
 
 		disk := exec.Command(
 			"qemu-img",
 			"create",
 			"-f", "qcow2",
-			"-b", cfg.Image,
+			"-b", img.path,
 			"-f", "qcow2",
 			diskPath,
 		)

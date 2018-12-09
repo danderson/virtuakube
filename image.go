@@ -81,47 +81,50 @@ sync
 `
 )
 
-type BuildCustomizeFunc func(*VM) error
+type ImageCustomizeFunc func(*VM) error
 
-type BuildConfig struct {
-	OutputPath     string
-	TempDir        string
-	CustomizeFuncs []BuildCustomizeFunc
+type ImageConfig struct {
+	Name           string
+	CustomizeFuncs []ImageCustomizeFunc
 	BuildLog       io.Writer
 	NoKVM          bool
 }
 
-func BuildImage(ctx context.Context, cfg *BuildConfig) error {
+type Image struct {
+	path string
+}
+
+func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	if err := checkTools(buildTools); err != nil {
-		return err
+		return nil, err
 	}
 
-	tmp, err := ioutil.TempDir(cfg.TempDir, "virtuakube-build")
+	tmp, err := ioutil.TempDir(u.dir, "virtuakube-build-"+cfg.Name)
 	if err != nil {
-		return fmt.Errorf("creating tempdir in %q: %v", cfg.TempDir, err)
+		return nil, fmt.Errorf("creating tempdir in %q: %v", u.dir, err)
 	}
 	defer os.RemoveAll(tmp)
 
 	if err := ioutil.WriteFile(filepath.Join(tmp, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
-		return fmt.Errorf("writing dockerfile: %v", err)
+		return nil, fmt.Errorf("writing dockerfile: %v", err)
 	}
 
 	iidPath := filepath.Join(tmp, "iid")
-	cmd := exec.CommandContext(ctx, "docker", "build", "--iidfile", iidPath, tmp)
+	cmd := exec.CommandContext(u.ctx, "docker", "build", "--iidfile", iidPath, tmp)
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("running docker build: %v", err)
+		return nil, fmt.Errorf("running docker build: %v", err)
 	}
 
 	iid, err := ioutil.ReadFile(iidPath)
 	if err != nil {
-		return fmt.Errorf("reading image ID: %v", err)
+		return nil, fmt.Errorf("reading image ID: %v", err)
 	}
 
 	cidPath := filepath.Join(tmp, "cid")
 	cmd = exec.CommandContext(
-		ctx,
+		u.ctx,
 		"docker", "run",
 		"--cidfile", cidPath,
 		fmt.Sprintf("--mount=type=bind,source=%s,destination=/tmp/ctx", tmp),
@@ -131,17 +134,17 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("extracting kernel from container: %v", err)
+		return nil, fmt.Errorf("extracting kernel from container: %v", err)
 	}
 
 	cid, err := ioutil.ReadFile(cidPath)
 	if err != nil {
-		return fmt.Errorf("reading image ID: %v", err)
+		return nil, fmt.Errorf("reading image ID: %v", err)
 	}
 
 	tarPath := filepath.Join(tmp, "fs.tar")
 	cmd = exec.CommandContext(
-		ctx,
+		u.ctx,
 		"docker", "export",
 		"-o", tarPath,
 		string(cid),
@@ -149,12 +152,12 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("exporting image tarball: %v", err)
+		return nil, fmt.Errorf("exporting image tarball: %v", err)
 	}
 
 	imgPath := filepath.Join(tmp, "fs.img")
 	cmd = exec.CommandContext(
-		ctx,
+		u.ctx,
 		"virt-make-fs",
 		"--partition", "--format=qcow2",
 		"--type=ext4", "--size=10G",
@@ -163,20 +166,20 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("creating image file: %v", err)
+		return nil, fmt.Errorf("creating image file: %v", err)
 	}
 
 	if err := os.Remove(tarPath); err != nil {
-		return fmt.Errorf("removing image tarball: %v", err)
+		return nil, fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	u, err := Create(ctx, filepath.Join(tmp, "universe"))
+	tmpu, err := Create(u.ctx, filepath.Join(tmp, "universe"))
 	if err != nil {
-		return fmt.Errorf("creating virtuakube instance: %v", err)
+		return nil, fmt.Errorf("creating virtuakube instance: %v", err)
 	}
-	defer u.Destroy()
-	v, err := u.NewVM(&VMConfig{
-		Image:      imgPath,
+	defer tmpu.Destroy()
+	v, err := tmpu.NewVM(&VMConfig{
+		ImageName:  imgPath,
 		MemoryMiB:  2048,
 		CommandLog: cfg.BuildLog,
 		NoKVM:      cfg.NoKVM,
@@ -185,18 +188,18 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		cmdline:    "root=/dev/vda1 rw",
 	})
 	if err != nil {
-		return fmt.Errorf("creating image VM: %v", err)
+		return nil, fmt.Errorf("creating image VM: %v", err)
 	}
 	if err := v.Start(); err != nil {
-		return fmt.Errorf("starting image VM: %v", err)
+		return nil, fmt.Errorf("starting image VM: %v", err)
 	}
 
 	if err := v.WriteFile("/etc/hosts", []byte(hosts)); err != nil {
-		return fmt.Errorf("install /etc/hosts: %v", err)
+		return nil, fmt.Errorf("install /etc/hosts: %v", err)
 	}
 
 	if err := v.WriteFile("/etc/fstab", []byte(fstab)); err != nil {
-		return fmt.Errorf("install /etc/fstab: %v", err)
+		return nil, fmt.Errorf("install /etc/fstab: %v", err)
 	}
 
 	err = v.RunMultiple(
@@ -211,39 +214,49 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		"chattr +i /etc/machine-id",
 	)
 	if err != nil {
-		return fmt.Errorf("finalize base image configuration: %v", err)
+		return nil, fmt.Errorf("finalize base image configuration: %v", err)
 	}
 
 	for _, f := range cfg.CustomizeFuncs {
 		if err = f(v); err != nil {
-			return fmt.Errorf("applying customize func: %v", err)
+			return nil, fmt.Errorf("applying customize func: %v", err)
 		}
 	}
 
 	if _, err := v.Run("sync"); err != nil {
-		return fmt.Errorf("syncing image disk: %v", err)
+		return nil, fmt.Errorf("syncing image disk: %v", err)
 	}
 
-	// Shut down the VM. Shutdown triggers destruction of the
-	// universe, so we can wait for the context to get canceled.
 	v.Run("poweroff")
 	if err := v.Wait(context.Background()); err != nil {
-		return fmt.Errorf("waiting for VM shutdown: %v", err)
+		return nil, fmt.Errorf("waiting for VM shutdown: %v", err)
+	}
+
+	ret := &Image{
+		path: filepath.Join(u.dir, "image", cfg.Name),
 	}
 
 	cmd = exec.CommandContext(
-		ctx,
+		u.ctx,
 		"qemu-img", "convert",
 		"-O", "qcow2",
-		imgPath, cfg.OutputPath,
+		imgPath, ret.path,
 	)
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("running qemu-img convert: %v", err)
+		os.Remove(ret.path)
+		return nil, fmt.Errorf("running qemu-img convert: %v", err)
 	}
 
-	return nil
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.images[cfg.Name] != nil {
+		panic("I don't know what to do about this yet")
+	}
+	u.images[cfg.Name] = ret
+
+	return ret, nil
 }
 
 func CustomizeInstallK8s(v *VM) error {
