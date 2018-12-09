@@ -12,18 +12,111 @@ several advantages compared to minikube or cloud clusters:
    in <10s, ideal for running lots of unit tests.
 
 It's a very young system, and is being built for the needs of testing
-[MetalLB](https://metallb.universe.tf) rather than as a general
-purpose virtualized Kubernetes cluster. It's being published
-independently of MetalLB in the hopes that it might be useful, but it
-requires some effort to use.
+[MetalLB](https://metallb.universe.tf), but seems like it could be
+generally useful for both playing with Kubernetes and testing
+scenarios. However, as of now you should expect the API to change
+frequently. Users and contributions are welcome, but be aware you're
+using a very young piece of software.
 
-Your host machine must have `qemu`, `qemu-img`, and `vde_switch`
-installed. Additionally, you must provide the base disk image for the
-VMs. Due to its size I cannot host it for free (if you can help with
-that, please get in touch!), but you can build your own with `go run
-./examples/build-image`. The image weighs ~2GiB, and requires about
-double that to build.
+Your host machine must have `qemu`, `qemu-img`, `vde_switch` and
+`guestfish` installed.
 
-See `examples/simple-cluster` for an example of how to use the
-API. `examples/freeze-cluster` and `examples/thaw-universe`
-demonstrate how to achieve <10s setup time for testing.
+## Example usage
+
+The CLI under `cmd/vkube` is a quick way to get started. All resources
+in virtuakube live in a `Universe`. Within a universe there are three
+resources: `Image`s are base disk images for VMs, `VM`s are machines
+that can talk to each other and the internet, and `Cluster`s are
+Kubernetes clusters bootstrapped on VMs.
+
+First, let's create a universe and build a VM base image inside it:
+
+```
+vkube newimage --universe ./my-test-universe --name base
+```
+
+This will create the `my-test-universe` directory to store universe
+state, and build a VM base disk that contains Kubernetes tools and
+prepulled control plane images. Building the image takes about 5
+minutes.
+
+Once we've done that, we can run a cluster in our universe:
+
+```
+vkube newcluster --universe ./my-test-universe --name example --image base
+```
+
+Bootstrapping a cluster takes a couple of minutes, but when done vkube
+will print something like:
+
+```
+Created cluster "example"
+Done (took 1m32s). Resources available:
+
+  Cluster "example": export KUBECONFIG="/home/dave/my-test-universe/cluster/example/kubeconfig"
+  VM "example-controller": ssh -p50000 root@localhost
+  VM "example-node1": ssh -p50003 root@localhost
+
+Hit ctrl+C to shut down
+```
+
+From there you can use the cluster as you wish, or SSH into VMs to do
+more stuff. The VMs created here are ephemeral, so when you ctrl+C
+they will be deleted, and you'll have to run `newcluster` again to
+rebuild it.
+
+If you want to suspend and resume your cluster instead of
+creating/deleting, just add `--save` to the commandline. With
+`--save`, all running VMs will be snapshotted to disk, and will all
+resume as if nothing happened the next time the universe is opened. To
+open a universe and resume whatever was saved, but without creating
+new resources, use the `resume` command:
+
+```
+vkube resume --universe ./my-test-universe
+```
+
+Assuming you created and saved a cluster previously, you'll get
+familiar output:
+
+```
+Done (took 791ms). Resources available:
+
+  Cluster "example": export KUBECONFIG="/home/dave/my-test-universe/cluster/example/kubeconfig"
+  VM "example-controller": ssh -p50000 root@localhost
+  VM "example-node1": ssh -p50003 root@localhost
+
+Hit ctrl+C to shut down
+```
+
+The cluster is back, but this time it took _less than a second_ to
+come up (your mileage may vary, depending on disk and CPU
+performance - but it should be much faster than creating VMs from
+scratch).
+
+All vkube commands accept `--save` to mean "resume from the current
+state next time, instead of reverting to the last savepoint. Saving is
+off by default for all commands except `newimage` (which is why the
+base image we created stuck around - vkube implicitly saved the
+universe after creating the image).
+
+All vkube commands accept `--wait`. If `--wait` is true, vkube will
+pause after the requested command has executed, print the available
+resources (as above), and wait for ctrl+C before closing the universe
+(with or without saving, depending on `--save`). Waiting is on by
+default for all commands except `newimage`.
+
+So, if you wanted to non-interactively create a universe, build a base
+image, build a cluster and then immediately save it for future use,
+you'd run:
+
+```
+vkube newimage --universe ./my-new-universe --name base
+vkube newcluster --universe ./my-new-universe --name example --image base --save --wait=false
+```
+
+Then, later, play with your cluster:
+
+```
+vkube resume --universe ./my-new-universe
+```
