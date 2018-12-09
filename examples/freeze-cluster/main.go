@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"time"
@@ -35,21 +34,16 @@ func main() {
 func run() error {
 	start := time.Now()
 
-	universeDir := *dir
+	if *dir == "" {
+		return fmt.Errorf("-universe-dir is required (but will be created if non-existent")
+	}
+
 	cmd := virtuakube.Open
-	if universeDir == "" {
-		fmt.Println("No universe directory provided, creating a directory...")
-		wd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-		tmp, err := ioutil.TempDir(wd, "vkube")
-		if err != nil {
-			return err
-		}
-		universeDir = tmp
+	_, err := os.Stat(*dir)
+	if os.IsNotExist(err) {
 		cmd = virtuakube.Create
-		fmt.Println("Universe directory is", universeDir)
+	} else if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -69,7 +63,7 @@ func run() error {
 
 	fmt.Println("Creating universe...")
 
-	universe, err := cmd(ctx, universeDir)
+	universe, err := cmd(ctx, *dir)
 	if err != nil {
 		return fmt.Errorf("Creating universe: %v", err)
 	}
