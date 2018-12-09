@@ -300,7 +300,7 @@ apiVersion: kubeadm.k8s.io/v1alpha3
 kind: ClusterConfiguration
 networking:
   podSubnet: "10.32.0.0/12"
-kubernetesVersion: "1.12.3"
+kubernetesVersion: "1.13.0"
 clusterName: "virtuakube"
 apiServerCertSANs:
 - "127.0.0.1"
@@ -313,7 +313,7 @@ apiServerCertSANs:
 	}
 
 	err = c.controller.RunMultiple(
-		"kubeadm init --config=/tmp/k8s.conf",
+		"kubeadm init --config=/tmp/k8s.conf --ignore-preflight-errors=NumCPU",
 		"KUBECONFIG=/etc/kubernetes/admin.conf kubectl taint nodes --all node-role.kubernetes.io/master-",
 		"KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /tmp/addons.yaml",
 	)

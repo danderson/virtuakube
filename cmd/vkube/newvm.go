@@ -23,15 +23,14 @@ var vmFlags = struct {
 }{}
 
 func addVMFlags(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&vmFlags.image, "image", "", "base disk image to use")
-	cmd.Flags().StringVar(&vmFlags.hostname, "hostname", "", "hostname for the VM")
-	cmd.Flags().IntVar(&vmFlags.memory, "memory", 1024, "amount of memory to give the VM in GiB")
 }
 
 func init() {
 	rootCmd.AddCommand(newvmCmd)
 	addUniverseFlags(newvmCmd, &vmFlags.universe, true, false)
-	addVMFlags(newvmCmd)
+	newvmCmd.Flags().StringVar(&vmFlags.image, "image", "", "base disk image to use")
+	newvmCmd.Flags().StringVar(&vmFlags.hostname, "hostname", "", "hostname for the VM")
+	newvmCmd.Flags().IntVar(&vmFlags.memory, "memory", 1024, "amount of memory to give the VM in GiB")
 }
 
 func newvm(u *virtuakube.Universe, verbose bool) error {
@@ -53,6 +52,8 @@ func newvm(u *virtuakube.Universe, verbose bool) error {
 	if err = vm.Start(); err != nil {
 		return fmt.Errorf("Starting VM: %v", err)
 	}
+
+	fmt.Printf("Created VM %q\n", vmFlags.hostname)
 
 	return nil
 }

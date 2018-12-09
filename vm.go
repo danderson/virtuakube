@@ -149,6 +149,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 	ret.cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
+	ret.cmd.Stderr = os.Stderr
 
 	monIn, err := ret.cmd.StdinPipe()
 	if err != nil {
