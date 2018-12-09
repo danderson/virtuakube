@@ -289,6 +289,8 @@ func (u *Universe) closeWithLock() {
 		}
 	}
 
+	u.swtch.Process.Kill()
+
 	for image, destroy := range u.newImages {
 		if !destroy {
 			continue
