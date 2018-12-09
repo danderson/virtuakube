@@ -194,6 +194,10 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		return nil, fmt.Errorf("validating VM config: %v", err)
 	}
 
+	if u.VM(cfg.Hostname) != nil {
+		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Hostname)
+	}
+
 	dir := filepath.Join(u.dir, "vm", cfg.Hostname)
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return nil, fmt.Errorf("creating VM state dir: %v", err)
