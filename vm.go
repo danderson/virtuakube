@@ -163,17 +163,17 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 
 	monIn, err := ret.cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating stdin pipe: %v", err)
 	}
 	ret.monIn = monIn
 	monOut, err := ret.cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating stdout pipe: %v", err)
 	}
 	ret.monOut = monOut
 
 	if err := ret.cmd.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("starting VM: %v", err)
 	}
 	go func() {
 		ret.cmd.Wait()
@@ -182,7 +182,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 
 	if _, err := readToPrompt(ret.monOut); err != nil {
 		ret.shutdown()
-		return nil, err
+		return nil, fmt.Errorf("reading qemu monitor prompt: %v", err)
 	}
 
 	u.mu.Lock()
@@ -200,12 +200,12 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	cfg, err := validateVMConfig(cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validating VM config: %v", err)
 	}
 
 	dir := filepath.Join(u.dir, "vm", cfg.Hostname)
 	if err := os.Mkdir(dir, 0700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating VM state dir: %v", err)
 	}
 
 	diskPath := cfg.Image
@@ -244,7 +244,29 @@ func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 		IPv6:         u.ipv6(),
 	}
 
-	return u.mkVM(fcfg, dir, diskPath, false)
+	vm, err := u.mkVM(fcfg, dir, diskPath, false)
+	if err != nil {
+		return nil, fmt.Errorf("creating VM: %v", err)
+	}
+
+	if err := vm.writeVMConfig(); err != nil {
+		vm.Close()
+		return nil, fmt.Errorf("writing VM config: %v", err)
+	}
+
+	return vm, nil
+}
+
+func (v *VM) writeVMConfig() error {
+	bs, err := json.MarshalIndent(v.cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling frozen VM config: %v", err)
+	}
+	cfgPath := filepath.Join(v.dir, "config.json")
+	if err := ioutil.WriteFile(cfgPath, bs, 0600); err != nil {
+		return fmt.Errorf("writing frozen VM config: %v", err)
+	}
+	return nil
 }
 
 func (u *Universe) thawVM(hostname string) (*VM, error) {
@@ -466,16 +488,7 @@ func (v *VM) freeze() error {
 	v.cfg.Config.CommandLog = nil
 
 	// Save the VM config
-	bs, err := json.MarshalIndent(v.cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling frozen VM config: %v", err)
-	}
-	cfgPath := filepath.Join(v.dir, "config.json")
-	if err := ioutil.WriteFile(cfgPath, bs, 0600); err != nil {
-		return fmt.Errorf("writing frozen VM config: %v", err)
-	}
-
-	return nil
+	return v.writeVMConfig()
 }
 
 func (v *VM) Hostname() string {

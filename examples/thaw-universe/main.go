@@ -49,13 +49,13 @@ func run() error {
 
 	fmt.Println("Thawing universe...")
 
-	universe, err := virtuakube.Thaw(ctx, *dir)
+	universe, err := virtuakube.Open(ctx, *dir)
 	if err != nil {
-		return fmt.Errorf("thawing universe: %v", err)
+		return fmt.Errorf("opening universe: %v", err)
 	}
 	defer universe.Close()
 
-	fmt.Printf("Universe thawed in %s. Resources available:\n\n", time.Since(start).Truncate(time.Millisecond))
+	fmt.Printf("Universe resumed in %s. Resources available:\n\n", time.Since(start).Truncate(time.Millisecond))
 	for _, cluster := range universe.Clusters() {
 		fmt.Printf("Cluster %q: export KUBECONFIG=%q\n", cluster.Name(), cluster.Kubeconfig())
 	}

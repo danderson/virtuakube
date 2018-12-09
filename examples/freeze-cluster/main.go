@@ -36,6 +36,7 @@ func run() error {
 	start := time.Now()
 
 	universeDir := *dir
+	cmd := virtuakube.Open
 	if universeDir == "" {
 		fmt.Println("No universe directory provided, creating a directory...")
 		wd, err := os.Getwd()
@@ -47,6 +48,7 @@ func run() error {
 			return err
 		}
 		universeDir = tmp
+		cmd = virtuakube.Create
 		fmt.Println("Universe directory is", universeDir)
 	}
 
@@ -67,7 +69,7 @@ func run() error {
 
 	fmt.Println("Creating universe...")
 
-	universe, err := virtuakube.New(ctx, universeDir)
+	universe, err := cmd(ctx, universeDir)
 	if err != nil {
 		return fmt.Errorf("Creating universe: %v", err)
 	}
@@ -99,11 +101,11 @@ func run() error {
 
 	fmt.Println("Freezing universe...")
 
-	if err := universe.Freeze(); err != nil {
-		return fmt.Errorf("freezing universe: %v", err)
+	if err := universe.Save(); err != nil {
+		return fmt.Errorf("saving universe: %v", err)
 	}
 
-	fmt.Printf("Universe frozen in %s. Use examples/thaw-universe to restore.\n", time.Since(start).Truncate(time.Second))
+	fmt.Printf("Universe saved in %s. Use examples/thaw-universe to restore.\n", time.Since(start).Truncate(time.Second))
 
 	return nil
 }

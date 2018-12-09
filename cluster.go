@@ -118,7 +118,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 
 	dir := filepath.Join(u.dir, "cluster", cfg.Name)
 	if err := os.Mkdir(dir, 0700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating cluster state dir: %v", err)
 	}
 
 	ret := &Cluster{
@@ -133,7 +133,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 	controllerCfg.PortForwards[6443] = true
 	ret.controller, err = u.NewVM(controllerCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating controller VM: %v", err)
 	}
 
 	for i := 0; i < cfg.NumNodes; i++ {
@@ -141,7 +141,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 		nodeCfg.Hostname = fmt.Sprintf("%s-node%d", cfg.Name, i+1)
 		node, err := u.NewVM(nodeCfg)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("creating node %d: %v", i+1, err)
 		}
 		ret.nodes = append(ret.nodes, node)
 	}

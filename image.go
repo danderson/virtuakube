@@ -170,11 +170,11 @@ func BuildImage(ctx context.Context, cfg *BuildConfig) error {
 		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	u, err := New(ctx, tmp)
+	u, err := Create(ctx, filepath.Join(tmp, "universe"))
 	if err != nil {
 		return fmt.Errorf("creating virtuakube instance: %v", err)
 	}
-	defer u.Close()
+	defer u.Destroy()
 	v, err := u.NewVM(&VMConfig{
 		Image:      imgPath,
 		MemoryMiB:  2048,

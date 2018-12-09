@@ -54,9 +54,7 @@ type Universe struct {
 
 	// Network resources for the universe. VMs request these on
 	// creation.
-	nextPort int
-	nextIPv4 net.IP
-	nextIPv6 net.IP
+	cfg *universeConfig
 
 	mu sync.Mutex
 
@@ -78,16 +76,16 @@ type universeConfig struct {
 	NextIPv6 net.IP
 }
 
-// New creates a new virtual universe. The ctx controls the overall
-// lifetime of the universe, i.e. if the context is canceled or times
-// out, the universe will be destroyed.
-func New(ctx context.Context, dir string) (*Universe, error) {
+func Create(ctx context.Context, dir string) (*Universe, error) {
 	cfg := &universeConfig{
 		NextPort: 50000,
 		NextIPv4: net.ParseIP("172.20.0.1"),
 		NextIPv6: net.ParseIP("fd00::1"),
 	}
 
+	if err := os.Mkdir(dir, 0700); err != nil {
+		return nil, err
+	}
 	if err := os.Mkdir(filepath.Join(dir, "vm"), 0700); err != nil {
 		return nil, err
 	}
@@ -95,10 +93,19 @@ func New(ctx context.Context, dir string) (*Universe, error) {
 		return nil, err
 	}
 
-	return mkUniverse(ctx, cfg, dir)
+	u, err := mkUniverse(ctx, cfg, dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := u.writeUniverseConfig(); err != nil {
+		u.Destroy()
+		return nil, err
+	}
+
+	return u, nil
 }
 
-func Thaw(ctx context.Context, dir string) (*Universe, error) {
+func Open(ctx context.Context, dir string) (*Universe, error) {
 	bs, err := ioutil.ReadFile(filepath.Join(dir, "universe.json"))
 	if err != nil {
 		return nil, err
@@ -195,9 +202,7 @@ func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe
 		dir:      dir,
 		ctx:      ctx,
 		shutdown: shutdown,
-		nextPort: cfg.NextPort,
-		nextIPv4: cfg.NextIPv4.To4(),
-		nextIPv6: cfg.NextIPv6,
+		cfg:      cfg,
 		vms:      map[string]*VM{},
 		clusters: map[string]*Cluster{},
 		swtch: exec.CommandContext(
@@ -208,6 +213,7 @@ func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe
 		),
 		switchSock: sock,
 	}
+	ret.cfg.NextIPv4 = ret.cfg.NextIPv4.To4()
 
 	ret.mu.Lock()
 	defer ret.mu.Unlock()
@@ -236,8 +242,6 @@ func (u *Universe) Context() context.Context {
 	return u.ctx
 }
 
-// Close destroys the universe, freeing up processes and temporary
-// files.
 func (u *Universe) Close() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -246,20 +250,26 @@ func (u *Universe) Close() error {
 	}
 	u.closed = true
 	u.shutdown()
+	return nil
+}
 
-	for _, dir := range []string{"switch", "vm", "cluster"} {
-		if err := os.RemoveAll(filepath.Join(u.dir, dir)); err != nil {
-			u.closeErr = err
-		}
+func (u *Universe) Destroy() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.closed {
+		return u.closeErr
+	}
+	u.closed = true
+	u.shutdown()
+
+	if err := os.RemoveAll(u.dir); err != nil {
+		u.closeErr = err
 	}
 
 	return u.closeErr
 }
 
-// Freeze checkpoints the universe, such that it can be thawed back
-// into the same state later. When Freeze returns, the universe is no
-// longer running or usable until Thaw is used to resume it.
-func (u *Universe) Freeze() error {
+func (u *Universe) Save() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.closed {
@@ -267,13 +277,26 @@ func (u *Universe) Freeze() error {
 	}
 	u.closed = true
 
+	// VM saving is slow, so parallelize it.
+	errs := make(chan error, len(u.vms))
 	for hostname, vm := range u.vms {
-		if err := vm.freeze(); err != nil {
-			u.closeErr = fmt.Errorf("freezing %q: %v", hostname, err)
+		go func(hostname string, vm *VM) {
+			if err := vm.freeze(); err != nil {
+				errs <- fmt.Errorf("freezing %q: %v", hostname, err)
+				return
+			}
+			errs <- nil
+		}(hostname, vm)
+	}
+	for range u.vms {
+		if err := <-errs; err != nil {
+			u.closeErr = err
 			return u.closeErr
 		}
 	}
 
+	// Clusters are a json file save, not worth the goroutine
+	// overhead.
 	for name, cluster := range u.clusters {
 		if err := cluster.freeze(); err != nil {
 			u.closeErr = fmt.Errorf("freezing cluster %q: %v", name, err)
@@ -285,25 +308,26 @@ func (u *Universe) Freeze() error {
 	// remaining things.
 	u.shutdown()
 
-	cfg := &universeConfig{
-		NextPort: u.nextPort,
-		NextIPv4: u.nextIPv4,
-		NextIPv6: u.nextIPv6,
-	}
-	bs, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		u.closeErr = fmt.Errorf("marshaling universe config: %v", err)
-		return u.closeErr
-	}
-	if err := ioutil.WriteFile(filepath.Join(u.dir, "universe.json"), bs, 0600); err != nil {
-		u.closeErr = fmt.Errorf("writing universe config: %v", err)
+	if err := u.writeUniverseConfig(); err != nil {
+		u.closeErr = err
 		return u.closeErr
 	}
 
 	return nil
 }
 
-// Wait waits for the universe to end.
+func (u *Universe) writeUniverseConfig() error {
+	bs, err := json.MarshalIndent(u.cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling universe config: %v", err)
+	}
+	if err := ioutil.WriteFile(filepath.Join(u.dir, "universe.json"), bs, 0600); err != nil {
+		return fmt.Errorf("writing universe config: %v", err)
+	}
+	return nil
+}
+
+// Wait waits for the universe to be Closed, Saved or Destroyed.
 func (u *Universe) Wait(ctx context.Context) error {
 	select {
 	case <-u.ctx.Done():
@@ -353,10 +377,10 @@ func (u *Universe) ipv4() net.IP {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	ret := u.nextIPv4
-	u.nextIPv4 = make(net.IP, 4)
-	copy(u.nextIPv4, ret)
-	u.nextIPv4[3]++
+	ret := u.cfg.NextIPv4
+	u.cfg.NextIPv4 = make(net.IP, 4)
+	copy(u.cfg.NextIPv4, ret)
+	u.cfg.NextIPv4[3]++
 	return ret
 }
 
@@ -364,10 +388,10 @@ func (u *Universe) ipv6() net.IP {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	ret := u.nextIPv6
-	u.nextIPv6 = make(net.IP, 16)
-	copy(u.nextIPv6, ret)
-	u.nextIPv6[15]++
+	ret := u.cfg.NextIPv6
+	u.cfg.NextIPv6 = make(net.IP, 16)
+	copy(u.cfg.NextIPv6, ret)
+	u.cfg.NextIPv6[15]++
 	return ret
 }
 
@@ -375,7 +399,7 @@ func (u *Universe) port() int {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	ret := u.nextPort
-	u.nextPort++
+	ret := u.cfg.NextPort
+	u.cfg.NextPort++
 	return ret
 }
