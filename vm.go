@@ -171,6 +171,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 		return nil, fmt.Errorf("creating stdout pipe: %v", err)
 	}
 	ret.monOut = monOut
+	ret.cmd.Stderr = os.Stderr
 
 	if err := ret.cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting VM: %v", err)
@@ -192,6 +193,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Config.Hostname)
 	}
 	u.vms[cfg.Config.Hostname] = ret
+	u.newVMs[cfg.Config.Hostname] = !resume
 
 	return ret, nil
 }

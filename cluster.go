@@ -152,6 +152,7 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Name)
 	}
 	u.clusters[cfg.Name] = ret
+	u.newClusters[cfg.Name] = true
 	return ret, nil
 }
 

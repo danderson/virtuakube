@@ -64,6 +64,11 @@ type Universe struct {
 	vms      map[string]*VM
 	clusters map[string]*Cluster
 
+	// VMs and clusters that were created during this session. Close
+	// will destroy these VMs, Save will persist them.
+	newVMs      map[string]bool
+	newClusters map[string]bool
+
 	// Records any close errors, so we can do concurrent-safe
 	// shutdown.
 	closed   bool
@@ -199,12 +204,14 @@ func mkUniverse(ctx context.Context, cfg *universeConfig, dir string) (*Universe
 	sock := filepath.Join(dir, "switch")
 
 	ret := &Universe{
-		dir:      dir,
-		ctx:      ctx,
-		shutdown: shutdown,
-		cfg:      cfg,
-		vms:      map[string]*VM{},
-		clusters: map[string]*Cluster{},
+		dir:         dir,
+		ctx:         ctx,
+		shutdown:    shutdown,
+		cfg:         cfg,
+		vms:         map[string]*VM{},
+		clusters:    map[string]*Cluster{},
+		newVMs:      map[string]bool{},
+		newClusters: map[string]bool{},
 		swtch: exec.CommandContext(
 			ctx,
 			"vde_switch",
@@ -250,6 +257,24 @@ func (u *Universe) Close() error {
 	}
 	u.closed = true
 	u.shutdown()
+
+	for hostname, destroy := range u.newVMs {
+		if !destroy {
+			continue
+		}
+		if err := os.RemoveAll(u.vms[hostname].dir); err != nil {
+			u.closeErr = err
+		}
+	}
+	for name, destroy := range u.newClusters {
+		if !destroy {
+			continue
+		}
+		if err := os.RemoveAll(u.clusters[name].dir); err != nil {
+			u.closeErr = err
+		}
+	}
+
 	return nil
 }
 

@@ -2,6 +2,7 @@ make Close delete VMs and Clusters that didn't exist when we started, so the dir
 adjust contexts in examples so that ^C doesn't always nuke the VMs, otherwise save doesn't work.
 snapshot stuff to make freezing more useful
 adjust RTC settings for vms
+sequence shutdowns better so that we separate "I asked things to terminate" from "everything is done and cleaned up"
 MetalLB tests!
 
 
