@@ -7,7 +7,8 @@ Virtuakube sets up virtual Kubernetes clusters for testing.
 It has several advantages compared to minikube or cloud clusters:
 
  - Support any number of nodes, limited only by system RAM.
- - Can run without root privileges.
+ - Can run without root privileges (sort of - currently still requires
+   docker privileges for image building).
  - Can run without internet access.
  - Because it emulates a full ethernet LAN, can be used to test
    networked systems.
