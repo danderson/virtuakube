@@ -50,35 +50,6 @@ RUN echo "supersede domain-name-servers 8.8.8.8;" >>/etc/dhcp/dhclient.conf
 /dev/vda1 / ext4 rw,relatime 0 1
 bpffs /sys/fs/bpf bpf rw,relatime 0 0
 `
-
-	setupScript = `
-set -euxo pipefail
-
-export DEBIAN_FRONTEND=noninteractive
-apt-get -y upgrade --no-install-recommends
-apt-get -y install --no-install-recommends ca-certificates grub2
-
-cat >/etc/hosts <<EOF
-127.0.0.1 localhost
-::1 localhost
-EOF
-
-cat >/etc/fstab <<EOF
-/dev/vda1 / ext4 rw,relatime 0 1
-bpffs /sys/fs/bpf bpf rw,relatime 0 1
-EOF
-
-update-initramfs -u
-
-grub-install /dev/vda
-perl -pi -e 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub
-update-grub2
-
-rm /etc/machine-id /var/lib/dbus/machine-id
-touch /etc/machine-id
-chattr +i /etc/machine-id
-sync
-`
 )
 
 type ImageCustomizeFunc func(*VM) error
@@ -200,6 +171,8 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	}
 
 	err = v.RunMultiple(
+		"timedatectl set-ntp false",
+
 		"update-initramfs -u",
 
 		"grub-install /dev/vda",

@@ -129,6 +129,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 		"-netdev", fmt.Sprintf("vde,id=net1,sock=%s", u.switchSock),
 		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", diskPath),
 		"-nographic",
+		"-rtc", "clock=vm",
 		"-serial", "null",
 		"-monitor", "stdio",
 		"-S",

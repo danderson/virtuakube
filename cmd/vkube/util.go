@@ -66,17 +66,19 @@ func runDoWithUniverse(flags *universeFlags, do universeFunc) error {
 		return err
 	}
 
+	d := time.Since(start)
+	switch {
+	case d < time.Second:
+		d = d.Truncate(time.Millisecond)
+	case d < time.Second:
+		d = d.Truncate(time.Second / 10)
+	default:
+		d = d.Truncate(time.Second)
+	}
+	fmt.Printf("Operation took %s.\n", d)
+
 	if flags.wait {
-		d := time.Since(start)
-		switch {
-		case d < time.Second:
-			d = d.Truncate(time.Millisecond)
-		case d < time.Second:
-			d = d.Truncate(time.Second / 10)
-		default:
-			d = d.Truncate(time.Second)
-		}
-		fmt.Printf("Done (took %s). Resources available:\n\n", d)
+		fmt.Printf("Resources available:\n\n")
 		for _, cluster := range u.Clusters() {
 			fmt.Printf("  Cluster %q: export KUBECONFIG=%q\n", cluster.Name(), cluster.Kubeconfig())
 		}
