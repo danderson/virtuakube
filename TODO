@@ -1,5 +1,3 @@
-CLI tool instead of standalone examples
-Close doesn't sequence shutdown properly any more, leaves dangling VMs and switches
 adjust RTC settings for vms
 MetalLB tests!
 Freezing a VM if you never started it will result in a broken VM on thaw. Unusual case but I should fix it someday.
