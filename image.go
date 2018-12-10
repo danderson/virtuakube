@@ -176,8 +176,6 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	}
 
 	err = v.RunMultiple(
-		"timedatectl set-ntp false",
-
 		"update-initramfs -u",
 
 		"grub-install /dev/vda",

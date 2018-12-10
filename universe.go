@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 var universeTools = []string{
@@ -56,6 +57,11 @@ type Universe struct {
 	// creation.
 	cfg *universeConfig
 
+	// Start time for this run of the universe, in our local frame of
+	// reference. This will be different from the universe's frame of
+	// reference in cfg.StartTime.
+	startTime time.Time
+
 	// Resources in the universe: a virtual switch, some VMs, some k8s
 	// clusters.
 	swtch    *exec.Cmd
@@ -76,18 +82,20 @@ type Universe struct {
 }
 
 type universeConfig struct {
-	NextPort int
-	NextIPv4 net.IP
-	NextIPv6 net.IP
+	NextPort  int
+	NextIPv4  net.IP
+	NextIPv6  net.IP
+	StartTime time.Time
 }
 
 // Create creates a new empty Universe in dir. The directory must not
 // already exist.
 func Create(dir string) (*Universe, error) {
 	cfg := &universeConfig{
-		NextPort: 50000,
-		NextIPv4: net.ParseIP("172.20.0.1"),
-		NextIPv6: net.ParseIP("fd00::1"),
+		NextPort:  50000,
+		NextIPv4:  net.ParseIP("172.20.0.1"),
+		NextIPv6:  net.ParseIP("fd00::1"),
+		StartTime: time.Now().UTC(),
 	}
 
 	dir, err := filepath.Abs(dir)
@@ -240,6 +248,7 @@ func mkUniverse(cfg *universeConfig, dir string) (*Universe, error) {
 		dir:         dir,
 		closedCh:    make(chan bool),
 		cfg:         cfg,
+		startTime:   time.Now().UTC(),
 		images:      map[string]*Image{},
 		vms:         map[string]*VM{},
 		clusters:    map[string]*Cluster{},
@@ -400,6 +409,7 @@ func (u *Universe) Save() error {
 }
 
 func (u *Universe) writeUniverseConfig() error {
+	u.cfg.StartTime = u.cfg.StartTime.Add(time.Since(u.startTime))
 	bs, err := json.MarshalIndent(u.cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling universe config: %v", err)

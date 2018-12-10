@@ -71,6 +71,12 @@ type VM struct {
 
 	dir string
 
+	// The subjective start time of the universe within the universe,
+	// and the start time outside the universe. We use these two to
+	// calculate what time it currently is inside the VM.
+	startTimeInUniverse time.Time
+	startTimeWallClock  time.Time
+
 	// Closed when the VM has exited.
 	stopped chan bool
 
@@ -113,9 +119,11 @@ func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
 
 func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) (*VM, error) {
 	ret := &VM{
-		cfg:     cfg,
-		stopped: make(chan bool),
-		dir:     dir,
+		cfg:                 cfg,
+		startTimeInUniverse: u.cfg.StartTime,
+		startTimeWallClock:  u.startTime,
+		stopped:             make(chan bool),
+		dir:                 dir,
 	}
 	ret.cmd = exec.Command(
 		"qemu-system-x86_64",
@@ -349,6 +357,13 @@ func (v *VM) boot() error {
 		break
 	}
 
+	if _, err := v.runWithLock("timedatectl set-ntp false"); err != nil {
+		return err
+	}
+	if _, err := v.runWithLock(fmt.Sprintf("timedatectl set-time %q", v.startTimeInUniverse.Add(time.Since(v.startTimeWallClock)).Format("2006-01-02 15:04:05"))); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -367,7 +382,10 @@ func (v *VM) Wait(ctx context.Context) error {
 func (v *VM) Run(command string) ([]byte, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	return v.runWithLock(command)
+}
 
+func (v *VM) runWithLock(command string) ([]byte, error) {
 	sess, err := v.ssh.NewSession()
 	if err != nil {
 		return nil, err
