@@ -1,4 +1,5 @@
 adjust RTC settings for vms
+document the API
 MetalLB tests!
 Freezing a VM if you never started it will result in a broken VM on thaw. Unusual case but I should fix it someday.
 Stop storing contexts in structs, that's naughy and defeats static analysis tools
