@@ -433,6 +433,13 @@ func (v *VM) ReadFile(path string) ([]byte, error) {
 	return sess.Output("cat " + path)
 }
 
+func (v *VM) Dial(network, addr string) (net.Conn, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	return v.ssh.Dial(network, addr)
+}
+
 // Close shuts down the VM, reverting all changes since the universe
 // was last saved.
 func (v *VM) Close() error {
