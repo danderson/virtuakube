@@ -1,7 +1,10 @@
 # Virtuakube
 
-Virtuakube sets up virtual Kubernetes clusters for testing. It has
-several advantages compared to minikube or cloud clusters:
+Virtuakube sets up virtual Kubernetes clusters for testing.
+
+![Project maturity: alpha](https://img.shields.io/badge/maturity-alpha-red.svg) [![license](https://img.shields.io/github/license/google/metallb.svg?maxAge=2592000)](https://github.com/danderson/virtuakube/blob/master/LICENSE) [![GoDoc](https://godoc.org/go.universe.tf/virtuakube?status.svg)](https://godoc.org/go.universe.tf/virtuakube)
+
+It has several advantages compared to minikube or cloud clusters:
 
  - Support any number of nodes, limited only by system RAM.
  - Can run without root privileges.
