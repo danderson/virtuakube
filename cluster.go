@@ -2,6 +2,7 @@ package virtuakube
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -213,45 +214,7 @@ func (c *Cluster) Start() error {
 		}
 	}
 
-	// TODO: this would be a useful public helper of some kind.
-	err := waitFor(func() (bool, error) {
-		nodes, err := c.client.CoreV1().Nodes().List(metav1.ListOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		if len(nodes.Items) != c.cfg.NumNodes+1 {
-			return false, nil
-		}
-		for _, node := range nodes.Items {
-			if !nodeReady(node) {
-				return false, nil
-			}
-		}
-
-		deploys, err := c.client.AppsV1().Deployments("").List(metav1.ListOptions{})
-		if err != nil {
-			return false, err
-		}
-		for _, deploy := range deploys.Items {
-			if deploy.Status.AvailableReplicas != deploy.Status.Replicas {
-				return false, nil
-			}
-		}
-
-		daemons, err := c.client.AppsV1().DaemonSets("").List(metav1.ListOptions{})
-		if err != nil {
-			return false, err
-		}
-		for _, daemon := range daemons.Items {
-			if daemon.Status.NumberAvailable != daemon.Status.DesiredNumberScheduled {
-				return false, nil
-			}
-		}
-
-		return true, nil
-	})
-	if err != nil {
+	if err := c.waitForAllRunningWithClient(context.Background(), c.client); err != nil {
 		return err
 	}
 
@@ -382,6 +345,53 @@ func (c *Cluster) KubernetesClient() *kubernetes.Clientset {
 	return c.client
 }
 
+// WaitForAllRunning waits for all nodes to report ready, and for all
+// deployments and daemonsets in the cluster to be fully available.
+func (c *Cluster) WaitForAllRunning(ctx context.Context) error {
+	client := c.KubernetesClient()
+	return c.waitForAllRunningWithClient(ctx, client)
+}
+
+func (c *Cluster) waitForAllRunningWithClient(ctx context.Context, client *kubernetes.Clientset) error {
+	return waitFor(ctx, func() (bool, error) {
+		nodes, err := client.CoreV1().Nodes().List(metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+
+		if len(nodes.Items) != c.cfg.NumNodes+1 {
+			return false, nil
+		}
+		for _, node := range nodes.Items {
+			if !nodeReady(node) {
+				return false, nil
+			}
+		}
+
+		deploys, err := client.AppsV1().Deployments("").List(metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+		for _, deploy := range deploys.Items {
+			if deploy.Status.AvailableReplicas != deploy.Status.Replicas {
+				return false, nil
+			}
+		}
+
+		daemons, err := client.AppsV1().DaemonSets("").List(metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+		for _, daemon := range daemons.Items {
+			if daemon.Status.NumberAvailable != daemon.Status.DesiredNumberScheduled {
+				return false, nil
+			}
+		}
+
+		return true, nil
+	})
+}
+
 // Controller returns the VM for the cluster controller node.
 func (c *Cluster) Controller() *VM {
 	c.mu.Lock()
@@ -463,8 +473,14 @@ func nodeReady(node corev1.Node) bool {
 	return false
 }
 
-func waitFor(test func() (bool, error)) error {
+func waitFor(ctx context.Context, test func() (bool, error)) error {
 	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		ok, err := test()
 		if err != nil {
 			return err
