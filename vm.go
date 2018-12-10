@@ -433,6 +433,7 @@ func (v *VM) ReadFile(path string) ([]byte, error) {
 	return sess.Output("cat " + path)
 }
 
+// Dial connects to the given destination, through the VM.
 func (v *VM) Dial(network, addr string) (net.Conn, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
