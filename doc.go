@@ -5,66 +5,81 @@
 // Universe, you can create either bare VMs (using universe.NewVM), or
 // Kubernetes clusters (using universe.NewCluster).
 //
+// Universes
+//
+// A universe requires a directory on disk to store its state. You get
+// a universe either by calling Create to make a new blank one, or by
+// calling Open to reuse an existing one.
+//
+// There are three ways of closing a universe. Calling Destroy wipes
+// all the universe's state. Save snapshots and preserve all current
+// resources, such that the next call to Open will resume the universe
+// exactly as it was when last saved. Close preserves the universe,
+// but rewinds its state to the last time it was saved, or to its
+// pristine post-creation state if it was never saved.
+//
+// A typical use of virtuakube in tests is to do expensive setup ahead
+// of time: use Create to make a new universe, then create and
+// configure resources within, and finally call Save to snapshot
+// it. Then, tests can simply Open this universe to get a fully
+// working system immediately. When each test is done, they can Close
+// the universe to undo all the changes that happened during the test,
+// ready for the next test to Open.
+//
 // VMs
 //
 // VMs have a preset form that can be customized somewhat, but not
 // fundamentally changed.
 //
 // Each VM has a single virtual disk, which is a copy-on-write fork of
-// a "backing" qemu qcow2 disk image. It is your responsibility to
-// provide the backing image for your VMs. The "vmimg" subdirectory of
-// this package's git repository contains a makefile that can
-// construct such an image. If you bring your own image, it must
-// conform to some conventions described in the "VM Backing Images"
-// section below.
+// a base image. You can build base images with universe.NewImage.
 //
-// In addition to its main disk, each VM gets access to a shared
-// directory with the host. The host directory given by vm.Dir is
-// mounted as "/host" inside the VM.
-//
-// Each VM gets two network interfaces. The first is a qemu user-mode
-// network that provides internet access, and the second connects to a
-// virtual LAN shared by all VMs in the same Universe. LAN IP
-// addresses are ephemeral and non-deterministic, so VMs should
-// resolve each others' hostnames to reliably communicate.
+// Each VM gets two network interfaces. The first provides internet
+// access, and the second connects to a virtual LAN shared by all VMs
+// in the same Universe.
 //
 // Network access to VMs from the host machine is only possible via
 // port forwards, which are specified in the VM's configuration at
-// creation time. The vm.ForwardedPort method specifies the localhost
-// port to connect to in order to reach a given port on the VM.
+// creation time. Use vm.ForwardedPort to find out the local port to
+// use to reach a given port on the VM.
 //
-// If a boot script is provided in the VM configuration, it is
-// executed during startup, after network configuration
-// completes.
+// The VM type provides some helpers for running commands and
+// reading/writing files on the VM.
 //
 // Kubernetes Clusters
 //
 // Clusters consist of one control plane VM, and a configurable number
-// of additional worker VMs. The control plane VM is not exclusive to
-// the control plane, so a zero-worker cluster is fully functional.
+// of additional worker VMs. Once created, the Cluster type has
+// helpers to retrieve a kubeconfig file to talk to the cluster, a Go
+// kubernetes client connected to the cluster, and the port to talk to
+// the in-cluster registry to push images.
 //
-// VM Backing Images
+// VM Images
 //
-// If you bring your own VM backing image, it must conform to the
+// VM images belong to a universe, and can be created with
+// NewImage. NewImage accepts customization functions to do things
+// like install extra packages, or configure services that all VMs
+// using the image will need.
+//
+// If you customize your own VM image, it must conform to the
 // following conventions for virtuakube to function correctly.
 //
-// The VM must mount the "host0" tag as "/host", using the virtio 9p
-// transport.
+// The VM should autoconfigure the first network interface (ens3)
+// using DHCP. Other ens* network interfaces should be left
+// unconfigured. The `ip` tool must be installed so that virtuakube
+// can configure those other interfaces.
 //
-// The VM should autoconfigure the network interface with MAC address
-// 52:54:00:12:34:56 using DHCP, and set the machine hostname to the
-// hostname provided by the DHCP server. The other network interface,
-// which has a randomized MAC address, should be configured with the
-// IPs listed in /host/ip, using /24 netmasks.
-//
-// If the file /host/bootscript.sh is present, the VM should execute
-// it after the network has been configured. Once both network
-// configuration and bootscript execution (if applicable) is complete,
-// the VM should create /host/boot-done to signal to the host that the
-// VM is ready for use.
+// The VM should disable any kind of time synchronization, and rely
+// purely on the VM's local virtual clock. VMs may spend hours or more
+// suspended, and to avoid issues associated with timejumps on resume,
+// virtuakube wants to maintain the illusion that no time has passed
+// since suspend.
 //
 // If you want to use NewCluster with your VM image, the VM must have
 // docker, kubectl and kubeadm preinstalled. Dependencies and
 // prerequisites must be satisfied such that `kubeadm init` produces a
-// working single-node cluster.
+// working single-node cluster. Virtuakube includes stock
+// customization functions to install Kubernetes prerequisites, and to
+// pre-pull the Docker images for faster cluster startup when
+// NewCluster is called.
 package virtuakube // import "go.universe.tf/virtuakube"

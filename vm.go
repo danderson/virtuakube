@@ -188,7 +188,7 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 	return ret, nil
 }
 
-// NewVM creates an unstarted VM with the given configuration.
+// NewVM creates an unstarted virtual machine with the given configuration.
 func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
 	cfg, err := validateVMConfig(cfg)
 	if err != nil {
@@ -286,7 +286,8 @@ func (u *Universe) thawVM(hostname string) (*VM, error) {
 	return u.mkVM(&cfg, dir, diskPath, true)
 }
 
-// Start boots the virtual machine.
+// Start starts the virtual machine and waits for it to finish
+// booting.
 func (v *VM) Start() error {
 	if err := v.boot(); err != nil {
 		return err
@@ -361,6 +362,8 @@ func (v *VM) Wait(ctx context.Context) error {
 	}
 }
 
+// Run runs the given shell command as root on the VM, and returns its
+// output.
 func (v *VM) Run(command string) ([]byte, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -385,6 +388,8 @@ func (v *VM) Run(command string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// RunMultiple runs all given commands sequentially. It stops at the
+// first unsuccessful command and returns its error.
 func (v *VM) RunMultiple(commands ...string) error {
 	for _, cmd := range commands {
 		if _, err := v.Run(cmd); err != nil {
@@ -394,6 +399,7 @@ func (v *VM) RunMultiple(commands ...string) error {
 	return nil
 }
 
+// WriteFile writes bs to the given path on the VM.
 func (v *VM) WriteFile(path string, bs []byte) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -411,6 +417,7 @@ func (v *VM) WriteFile(path string, bs []byte) error {
 	return sess.Run("cat >" + path)
 }
 
+// ReadFile reads path from the VM and returns its contents.
 func (v *VM) ReadFile(path string) ([]byte, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -426,6 +433,8 @@ func (v *VM) ReadFile(path string) ([]byte, error) {
 	return sess.Output("cat " + path)
 }
 
+// Close shuts down the VM, reverting all changes since the universe
+// was last saved.
 func (v *VM) Close() error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -484,6 +493,9 @@ func (v *VM) freeze() error {
 	return v.writeVMConfig()
 }
 
+// Hostname returns the configured hostname of the VM. It might be
+// different from the VM's actual hostname if its hostname was changed
+// after boot by something other than virtuakube.
 func (v *VM) Hostname() string {
 	return v.cfg.Config.Hostname
 }
@@ -494,7 +506,10 @@ func (v *VM) ForwardedPort(dst int) int {
 	return v.cfg.PortForwards[dst]
 }
 
+// IPv4 returns the LAN IPv4 address of the VM.
 func (v *VM) IPv4() net.IP { return v.cfg.IPv4 }
+
+// IPv6 returns the LAN IPv6 address of the VM.
 func (v *VM) IPv6() net.IP { return v.cfg.IPv6 }
 
 var (

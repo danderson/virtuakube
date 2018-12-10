@@ -34,7 +34,7 @@ type ClusterConfig struct {
 	VMConfig *VMConfig
 	// NetworkAddon is the Kubernetes network addon to install. Can be
 	// an absolute path to a manifest yaml, or one of the builtin
-	// addons "calico" or "weave".
+	// addons "calico", "weave" or "flannel".
 	NetworkAddon string
 }
 
@@ -191,8 +191,8 @@ func (u *Universe) thawCluster(name string) (*Cluster, error) {
 	return ret, nil
 }
 
-// Start boots the virtual cluster. The universe is destroyed if any
-// VM in the cluster shuts down.
+// Start starts the virtual cluster and waits for it to finish
+// initializing.
 func (c *Cluster) Start() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

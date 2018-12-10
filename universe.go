@@ -41,7 +41,7 @@ func checkTools(tools []string) error {
 	return nil
 }
 
-// A Universe is a virtual test network and its associated resources.
+// A Universe is a virtual sandbox and its associated resources.
 type Universe struct {
 	// Root containing all the stuff in the universe.
 	dir string
@@ -81,6 +81,8 @@ type universeConfig struct {
 	NextIPv6 net.IP
 }
 
+// Create creates a new empty Universe in dir. The directory must not
+// already exist.
 func Create(dir string) (*Universe, error) {
 	cfg := &universeConfig{
 		NextPort: 50000,
@@ -118,6 +120,8 @@ func Create(dir string) (*Universe, error) {
 	return u, nil
 }
 
+// Open opens the existing Universe in dir, and resumes any VMs and
+// clusters within.
 func Open(dir string) (*Universe, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -270,6 +274,8 @@ func mkUniverse(cfg *universeConfig, dir string) (*Universe, error) {
 	return ret, nil
 }
 
+// Close closes the universe, discarding all changes since the last
+// call to Save.
 func (u *Universe) Close() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -321,6 +327,8 @@ func (u *Universe) closeWithLock() {
 	}
 }
 
+// Destroy closes the universe and recursively deletes the universe
+// directory.
 func (u *Universe) Destroy() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -338,6 +346,8 @@ func (u *Universe) Destroy() error {
 	return u.closeErr
 }
 
+// Save snapshots the current state of VMs and clusters, then closes
+// the universe.
 func (u *Universe) Save() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -410,18 +420,23 @@ func (u *Universe) Wait(ctx context.Context) error {
 	}
 }
 
+// Image returns the named image, or nil if no such image exists in
+// the universe.
 func (u *Universe) Image(name string) *Image {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.images[name]
 }
 
+// VM returns the VM with the given hostname, or nil if no such VM
+// exists in the universe.
 func (u *Universe) VM(hostname string) *VM {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.vms[hostname]
 }
 
+// VM returns a list of all VMs in the universe.
 func (u *Universe) VMs() []*VM {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -434,12 +449,15 @@ func (u *Universe) VMs() []*VM {
 	return ret
 }
 
+// Cluster returns the Cluster with the given name, or nil if no such
+// Cluster exists in the universe.
 func (u *Universe) Cluster(name string) *Cluster {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.clusters[name]
 }
 
+// Clusters returns a list of all Clusters in the universe.
 func (u *Universe) Clusters() []*Cluster {
 	u.mu.Lock()
 	defer u.mu.Unlock()

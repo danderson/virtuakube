@@ -52,8 +52,11 @@ bpffs /sys/fs/bpf bpf rw,relatime 0 0
 `
 )
 
+// ImageCustomizeFunc is a function that applies customizations to a
+// VM that's being built by NewImage.
 type ImageCustomizeFunc func(*VM) error
 
+// ImageConfig is the build configuration for an Image.
 type ImageConfig struct {
 	Name           string
 	CustomizeFuncs []ImageCustomizeFunc
@@ -61,10 +64,12 @@ type ImageConfig struct {
 	NoKVM          bool
 }
 
+// Image is a VM disk base image.
 type Image struct {
 	path string
 }
 
+// NewImage builds a VM disk image using the given config.
 func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	if err := checkTools(buildTools); err != nil {
 		return nil, err
@@ -228,6 +233,9 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	return ret, nil
 }
 
+// CustomizeInstallK8s is a build customization function that installs
+// Docker and Kubernetes prerequisites, as required for NewCluster to
+// function.
 func CustomizeInstallK8s(v *VM) error {
 	repos := []byte(`
 deb [arch=amd64] https://download.docker.com/linux/debian stretch stable
@@ -267,6 +275,9 @@ deb http://apt.kubernetes.io/ kubernetes-xenial main
 	return nil
 }
 
+// CustomizePreloadK8sImages is a build customization function that
+// pre-pulls all the Docker images needed to fully initialize a
+// Kubernetes cluster.
 func CustomizePreloadK8sImages(v *VM) error {
 	err := v.RunMultiple(
 		"systemctl start docker",
@@ -289,6 +300,8 @@ func CustomizePreloadK8sImages(v *VM) error {
 	return nil
 }
 
+// CustomizeScript is a build customization function that executes the
+// script at path on a VM running the disk image being built.
 func CustomizeScript(path string) func(*VM) error {
 	return func(v *VM) error {
 		bs, err := ioutil.ReadFile(path)
