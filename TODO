@@ -5,21 +5,3 @@ Stop storing contexts in structs, that's naughy and defeats static analysis tool
 Better control over the k8s version - make it consistent with the installed kubelet version automagically
 Errors during resume leave dangling VMs
 Support multiple switches, and more principled switch setup/teardown/resume.
-
-New API:
- - vkube Open() and Create(), similar to os.File. Either create an
-   empty universe, or open an existing one.
-   - Does Opening an existing universe immediately resume everything
-     inside it? I think so?
- - universe.Close() stops everything, reverts everything to savepoint.
- - universe.Save() stops everything, but snapshots everything so the
-   next Open() will resume from this moment.
- - universe.Destroy() stops everything, deletes everything. Nuke the
-   universe.
- - Images are a component of universes. Read-only images that serve as
-   bases for several VMs.
- - VM references an Image as its base.
- - VMs run in -snapshot mode, so Close() is a pkill + nothing. Save is
-   a stop+savevm+commit_all+quit. Destroy is Close() + rm -rf.
- - There's no multiple snapshots. The way you persistently branch the
-   universe is cp -R.
