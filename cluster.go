@@ -345,15 +345,30 @@ func (c *Cluster) KubernetesClient() *kubernetes.Clientset {
 	return c.client
 }
 
-// WaitForAllRunning waits for all nodes to report ready, and for all
-// deployments and daemonsets in the cluster to be fully available.
-func (c *Cluster) WaitForAllRunning(ctx context.Context) error {
-	client := c.KubernetesClient()
-	return c.waitForAllRunningWithClient(ctx, client)
+// WaitFor invokes the test function repeatedly until it returns true,
+// or the context times out.
+func (c *Cluster) WaitFor(ctx context.Context, test func() (bool, error)) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		ok, err := test()
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (c *Cluster) waitForAllRunningWithClient(ctx context.Context, client *kubernetes.Clientset) error {
-	return waitFor(ctx, func() (bool, error) {
+	return c.WaitFor(ctx, func() (bool, error) {
 		nodes, err := client.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
 			return false, err
@@ -471,24 +486,4 @@ func nodeReady(node corev1.Node) bool {
 	}
 
 	return false
-}
-
-func waitFor(ctx context.Context, test func() (bool, error)) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		ok, err := test()
-		if err != nil {
-			return err
-		}
-		if ok {
-			return nil
-		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
 }
