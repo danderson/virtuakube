@@ -69,13 +69,39 @@ type Image struct {
 	path string
 }
 
+func (u *Universe) ImportImage(name, path string) error {
+	disk := randomDiskName()
+	src, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("opening %q: %v", path, err)
+	}
+
+	dst, err := os.Create(filepath.Join(u.dir, disk))
+	if err != nil {
+		return fmt.Errorf("creating %q: %v", disk, err)
+	}
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("writing disk: %v", err)
+	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.images[name] != "" {
+		panic("what")
+	}
+	u.images[name] = disk
+
+	return nil
+}
+
 // NewImage builds a VM disk image using the given config.
 func (u *Universe) NewImage(cfg *ImageConfig) error {
 	if err := checkTools(buildTools); err != nil {
 		return err
 	}
 
-	tmp, err := ioutil.TempDir("", "virtuakube-build-"+cfg.Name)
+	tmp, err := ioutil.TempDir(u.tmpdir, "b")
 	if err != nil {
 		return fmt.Errorf("creating tempdir in %q: %v", u.dir, err)
 	}
@@ -146,19 +172,24 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	tmpu, err := Create(filepath.Join(tmp, "universe"))
+	tmpu, err := Create(filepath.Join(tmp, "u"))
 	if err != nil {
 		return fmt.Errorf("creating virtuakube instance: %v", err)
 	}
 	defer tmpu.Destroy()
+
+	if err := tmpu.ImportImage("build", imgPath); err != nil {
+		return fmt.Errorf("importing half-built image: %v", err)
+	}
+
 	v, err := tmpu.NewVM(&VMConfig{
+		Image:      "build",
 		MemoryMiB:  2048,
 		CommandLog: cfg.BuildLog,
 		kernelConfig: &kernelConfig{
 			kernelPath: filepath.Join(tmp, "vmlinuz"),
 			initrdPath: filepath.Join(tmp, "initrd.img"),
 			cmdline:    "root=/dev/vda1 rw",
-			diskPath:   imgPath,
 		},
 	})
 	if err != nil {
@@ -211,7 +242,8 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 	cmd = exec.Command(
 		"qemu-img", "convert",
 		"-O", "qcow2",
-		imgPath, filepath.Join(u.dir, ret),
+		filepath.Join(tmp, "u", tmpu.image("build")),
+		filepath.Join(u.dir, ret),
 	)
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog

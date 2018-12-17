@@ -155,7 +155,11 @@ func Open(dir string, snapshot string) (*Universe, error) {
 		return nil, fmt.Errorf("creating temporary directory: %v", err)
 	}
 
-	sock := filepath.Join(tmpdir, "switch")
+	sock, err := filepath.Rel(dir, filepath.Join(tmpdir, "switch"))
+	if err != nil {
+		return nil, fmt.Errorf("getting switch socket path: %v", err)
+	}
+
 	ret := &Universe{
 		dir:            dir,
 		tmpdir:         tmpdir,
@@ -176,6 +180,7 @@ func Open(dir string, snapshot string) (*Universe, error) {
 		vms:      map[string]*VM{},
 		clusters: map[string]*Cluster{},
 	}
+	ret.swtch.Dir = ret.dir
 	ret.swtch.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
@@ -391,6 +396,12 @@ func (u *Universe) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return errors.New("timeout")
 	}
+}
+
+func (u *Universe) image(name string) string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.images[name]
 }
 
 // VM returns the VM with the given name, or nil if no such VM

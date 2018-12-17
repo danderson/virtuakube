@@ -81,10 +81,7 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 		universeStartTime: u.cfg.Snapshots[u.activeSnapshot].Clock,
 		universeOpenTime:  u.startTime,
 	}
-	diskPath := cfg.DiskFile
-	if !filepath.IsAbs(diskPath) {
-		diskPath = filepath.Join(u.dir, diskPath)
-	}
+
 	ret.cmd = exec.Command(
 		"qemu-system-x86_64",
 		"-m", strconv.Itoa(cfg.MemoryMiB),
@@ -95,7 +92,7 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 		"-object", "rng-random,filename=/dev/urandom,id=rng0",
 		"-netdev", fmt.Sprintf("user,id=net0,%s", makeForwards(cfg.PortForwards)),
 		"-netdev", fmt.Sprintf("vde,id=net1,sock=%s", u.switchSock),
-		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", diskPath),
+		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", cfg.DiskFile),
 		"-nographic",
 		"-rtc", "clock=vm",
 		"-serial", "null",
@@ -113,6 +110,7 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 	if resume {
 		ret.cmd.Args = append(ret.cmd.Args, "-loadvm", u.cfg.Snapshots[u.activeSnapshot].ID)
 	}
+	ret.cmd.Dir = u.dir
 	ret.cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
@@ -191,12 +189,12 @@ func (u *Universe) newVMWithLock(cfg *VMConfig) (*VM, error) {
 		vmcfg.PortForwards[fwd] = u.port()
 	}
 
-	if cfg.kernelConfig == nil {
-		img := u.images[cfg.Image]
-		if img == "" {
-			return nil, fmt.Errorf("universe doesn't have an image named %q", cfg.Image)
-		}
+	img := u.images[cfg.Image]
+	if img == "" {
+		return nil, fmt.Errorf("universe doesn't have an image named %q", cfg.Image)
+	}
 
+	if cfg.kernelConfig == nil {
 		disk := exec.Command(
 			"qemu-img",
 			"create",
@@ -210,7 +208,7 @@ func (u *Universe) newVMWithLock(cfg *VMConfig) (*VM, error) {
 			return nil, fmt.Errorf("creating VM disk: %v\n%s", err, string(out))
 		}
 	} else {
-		vmcfg.DiskFile = cfg.kernelConfig.diskPath
+		vmcfg.DiskFile = img
 	}
 
 	vm, err := u.mkVM(vmcfg, cfg.kernelConfig, false)
