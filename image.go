@@ -75,7 +75,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 		return err
 	}
 
-	tmp, err := ioutil.TempDir(u.tmpdir, "virtuakube-build-"+cfg.Name)
+	tmp, err := ioutil.TempDir("", "virtuakube-build-"+cfg.Name)
 	if err != nil {
 		return fmt.Errorf("creating tempdir in %q: %v", u.dir, err)
 	}
