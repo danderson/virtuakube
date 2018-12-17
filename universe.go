@@ -398,6 +398,16 @@ func (u *Universe) Wait(ctx context.Context) error {
 	}
 }
 
+func (u *Universe) Snapshots() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	var ret []string
+	for name := range u.cfg.Snapshots {
+		ret = append(ret, name)
+	}
+	return ret
+}
+
 func (u *Universe) image(name string) string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
