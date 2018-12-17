@@ -2,6 +2,7 @@ package virtuakube
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"go.universe.tf/virtuakube/internal/config"
 )
 
 var universeTools = []string{
@@ -46,34 +49,44 @@ func checkTools(tools []string) error {
 type Universe struct {
 	// Root containing all the stuff in the universe.
 	dir string
+
+	tmpdir string
+
 	// VDE switch control socket, used by VMs to attach to the switch.
 	switchSock string
 
+	// Channel that gets closed right at the end of Close, Destroy, or
+	// Save. Wait waits for this channel to get closed.
 	closedCh chan bool
 
+	// Must hold this mutex to touch any of the following.
 	mu sync.Mutex
 
-	// Network resources for the universe. VMs request these on
-	// creation.
-	cfg *universeConfig
+	// Configuration for the entire universe, loaded from
+	// file. Contains data about all snapshots, but isn't updated in
+	// realtime while a snapshot is running.
+	cfg *config.Universe
 
-	// Start time for this run of the universe, in our local frame of
-	// reference. This will be different from the universe's frame of
-	// reference in cfg.StartTime.
+	// Current network parameters as they mutate while the universe is
+	// running.
+	nextPort int
+	nextIPv4 net.IP
+	nextIPv6 net.IP
+
+	// Name of the currently running snapshot.
+	activeSnapshot string
+
+	// Time at which the currently active snapshot was started. We use
+	// this, in combination with the snapshotted universe time, to
+	// figure out what time it is for the running snapshot.
 	startTime time.Time
 
 	// Resources in the universe: a virtual switch, some VMs, some k8s
 	// clusters.
 	swtch    *exec.Cmd
-	images   map[string]*Image
+	images   map[string]string // name -> diskpath
 	vms      map[string]*VM
 	clusters map[string]*Cluster
-
-	// VMs and clusters that were created during this session. Close
-	// will destroy these VMs, Save will persist them.
-	newImages   map[string]bool
-	newVMs      map[string]bool
-	newClusters map[string]bool
 
 	// Records any close errors, so we can do concurrent-safe
 	// shutdown.
@@ -81,21 +94,20 @@ type Universe struct {
 	closeErr error
 }
 
-type universeConfig struct {
-	NextPort  int
-	NextIPv4  net.IP
-	NextIPv6  net.IP
-	StartTime time.Time
-}
-
 // Create creates a new empty Universe in dir. The directory must not
 // already exist.
 func Create(dir string) (*Universe, error) {
-	cfg := &universeConfig{
-		NextPort:  50000,
-		NextIPv4:  net.ParseIP("172.20.0.1"),
-		NextIPv6:  net.ParseIP("fd00::1"),
-		StartTime: time.Now().UTC(),
+	cfg := &config.Universe{
+		Snapshots: map[string]*config.Snapshot{
+			"": {
+				Name:     "",
+				ID:       randomSnapshotID(),
+				NextPort: 50000,
+				NextIPv4: net.ParseIP("172.20.0.1"),
+				NextIPv6: net.ParseIP("fd00::1"),
+				Clock:    time.Now(),
+			},
+		},
 	}
 
 	dir, err := filepath.Abs(dir)
@@ -106,100 +118,99 @@ func Create(dir string) (*Universe, error) {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return nil, err
 	}
-	if err := os.Mkdir(filepath.Join(dir, "image"), 0700); err != nil {
-		return nil, err
-	}
-	if err := os.Mkdir(filepath.Join(dir, "vm"), 0700); err != nil {
-		return nil, err
-	}
-	if err := os.Mkdir(filepath.Join(dir, "cluster"), 0700); err != nil {
+
+	cfgPath := filepath.Join(dir, "config.json")
+
+	if err := config.Write(cfgPath, cfg); err != nil {
 		return nil, err
 	}
 
-	u, err := mkUniverse(cfg, dir)
-	if err != nil {
-		return nil, err
-	}
-	if err := u.writeUniverseConfig(); err != nil {
-		u.Destroy()
-		return nil, err
-	}
-
-	return u, nil
+	return Open(dir, "")
 }
 
-// Open opens the existing Universe in dir, and resumes any VMs and
-// clusters within.
-func Open(dir string) (*Universe, error) {
+// Open opens the existing Universe in dir, and resumes from snapshot.
+func Open(dir string, snapshot string) (*Universe, error) {
+	if err := checkTools(universeTools); err != nil {
+		return nil, err
+	}
+
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	bs, err := ioutil.ReadFile(filepath.Join(dir, "universe.json"))
+	cfgPath := filepath.Join(dir, "config.json")
+	cfg, err := config.Read(cfgPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading universe config: %v", err)
 	}
 
-	var cfg universeConfig
-	if err := json.Unmarshal(bs, &cfg); err != nil {
-		return nil, err
+	snap := cfg.Snapshots[snapshot]
+	if snap == nil {
+		return nil, fmt.Errorf("no snapshot %q in universe", snapshot)
 	}
 
-	u, err := mkUniverse(&cfg, dir)
+	tmpdir, err := ioutil.TempDir(dir, "tmp")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating temporary directory: %v", err)
 	}
 
-	// Recreate all images.
-	f, err := os.Open(filepath.Join(u.dir, "image"))
-	if err != nil {
+	sock := filepath.Join(tmpdir, "switch")
+	ret := &Universe{
+		dir:            dir,
+		tmpdir:         tmpdir,
+		switchSock:     sock,
+		closedCh:       make(chan bool),
+		cfg:            cfg,
+		nextPort:       snap.NextPort,
+		nextIPv4:       snap.NextIPv4.To4(),
+		nextIPv6:       snap.NextIPv6,
+		activeSnapshot: snapshot,
+		startTime:      time.Now(),
+		swtch: exec.Command(
+			"vde_switch",
+			"--sock", sock,
+			"-m", "0600",
+		),
+		images:   map[string]string{},
+		vms:      map[string]*VM{},
+		clusters: map[string]*Cluster{},
+	}
+	ret.swtch.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+
+	if err := ret.swtch.Start(); err != nil {
+		ret.Close()
 		return nil, err
 	}
-	defer f.Close()
+	// Destroy the universe if the switch exits.
+	go func() {
+		ret.swtch.Wait()
+		ret.Close()
+	}()
 
-	imagePaths, err := f.Readdir(0)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, imagePath := range imagePaths {
-		u.images[imagePath.Name()] = &Image{
-			path: filepath.Join(u.dir, "image", imagePath.Name()),
-		}
-	}
-
-	// Thaw all VMs.
-	f, err = os.Open(filepath.Join(u.dir, "vm"))
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	vmPaths, err := f.Readdir(0)
-	if err != nil {
-		return nil, err
+	for _, img := range snap.Images {
+		ret.images[img.Name] = img.File
 	}
 
 	// thaw all VMs concurrently. This is the expensive step where
 	// they struggle to load their huge memory snapshots. At the end
 	// of thaw, they're fully loaded, but with their CPUs stopped.
-	res := make(chan error, len(vmPaths))
-	for _, vmPath := range vmPaths {
-		go func(name string) {
-			vm, err := u.thawVM(name)
+	vms := snap.VMs
+	res := make(chan error, len(vms))
+	for _, vmcfg := range vms {
+		go func(vmcfg *config.VM) {
+			_, err := ret.resumeVM(vmcfg)
 			if err != nil {
 				res <- err
 				return
 			}
 
-			u.mu.Lock()
-			defer u.mu.Unlock()
-			u.vms[name] = vm
 			res <- nil
-		}(vmPath.Name())
+		}(vmcfg)
 	}
-	for range vmPaths {
+	for range vms {
 		if err := <-res; err != nil {
 			return nil, err
 		}
@@ -208,77 +219,18 @@ func Open(dir string) (*Universe, error) {
 	// Now that the expensive load is done, blow through all VMs and
 	// restart their CPUs in rapid succession, to keep the clock skew
 	// between VMs minimal.
-	for _, vmPath := range vmPaths {
-		if err := u.VM(vmPath.Name()).boot(); err != nil {
+	for _, vm := range ret.vms {
+		if err := vm.boot(); err != nil {
 			return nil, err
 		}
 	}
 
 	// Thaw all cluster objects, now that the cluster VMs are running.
-	f, err = os.Open(filepath.Join(u.dir, "cluster"))
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	clusterPaths, err := f.Readdir(0)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, clusterPath := range clusterPaths {
-		cluster, err := u.thawCluster(clusterPath.Name())
-		if err != nil {
-			return nil, fmt.Errorf("thawing cluster %q: %v", clusterPath.Name(), err)
+	for _, clusterCfg := range snap.Clusters {
+		if err := ret.resumeCluster(clusterCfg); err != nil {
+			return nil, err
 		}
-		u.clusters[clusterPath.Name()] = cluster
 	}
-
-	return u, nil
-}
-
-func mkUniverse(cfg *universeConfig, dir string) (*Universe, error) {
-	if err := checkTools(universeTools); err != nil {
-		return nil, err
-	}
-
-	sock := filepath.Join(dir, "switch")
-
-	ret := &Universe{
-		dir:         dir,
-		closedCh:    make(chan bool),
-		cfg:         cfg,
-		startTime:   time.Now().UTC(),
-		images:      map[string]*Image{},
-		vms:         map[string]*VM{},
-		clusters:    map[string]*Cluster{},
-		newImages:   map[string]bool{},
-		newVMs:      map[string]bool{},
-		newClusters: map[string]bool{},
-		swtch: exec.Command(
-			"vde_switch",
-			"--sock", sock,
-			"-m", "0600",
-		),
-		switchSock: sock,
-	}
-	ret.cfg.NextIPv4 = ret.cfg.NextIPv4.To4()
-	ret.swtch.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
-
-	ret.mu.Lock()
-	defer ret.mu.Unlock()
-
-	if err := ret.swtch.Start(); err != nil {
-		ret.Close()
-		return nil, err
-	}
-	// Destroy the universe if the virtual switch exits.
-	go func() {
-		ret.swtch.Wait()
-		ret.Close()
-	}()
 
 	return ret, nil
 }
@@ -310,29 +262,25 @@ func (u *Universe) closeWithLock() {
 
 	u.swtch.Process.Kill()
 
-	for image, destroy := range u.newImages {
-		if !destroy {
-			continue
-		}
-		if err := os.Remove(u.images[image].path); err != nil {
-			u.closeErr = err
-		}
-	}
-	for hostname, destroy := range u.newVMs {
-		if !destroy {
-			continue
-		}
-		if err := os.RemoveAll(u.vms[hostname].dir); err != nil {
-			u.closeErr = err
+	snap := u.cfg.Snapshots[u.activeSnapshot]
+
+	for name, path := range u.images {
+		if snap.Images[name] == nil {
+			if err := os.Remove(filepath.Join(u.dir, path)); err != nil {
+				u.closeErr = err
+			}
 		}
 	}
-	for name, destroy := range u.newClusters {
-		if !destroy {
-			continue
+	for name, vm := range u.vms {
+		if snap.VMs[name] == nil {
+			if err := os.Remove(filepath.Join(u.dir, vm.cfg.DiskFile)); err != nil {
+				u.closeErr = err
+			}
 		}
-		if err := os.RemoveAll(u.clusters[name].dir); err != nil {
-			u.closeErr = err
-		}
+	}
+
+	if err := os.RemoveAll(u.tmpdir); err != nil {
+		u.closeErr = err
 	}
 }
 
@@ -357,23 +305,39 @@ func (u *Universe) Destroy() error {
 
 // Save snapshots the current state of VMs and clusters, then closes
 // the universe.
-func (u *Universe) Save() error {
+func (u *Universe) Save(snapshotName string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.closed {
 		return u.closeErr
 	}
 
+	snap := &config.Snapshot{
+		Name:     snapshotName,
+		NextPort: u.nextPort,
+		NextIPv4: u.nextIPv4,
+		NextIPv6: u.nextIPv6,
+		Clock:    u.cfg.Snapshots[u.activeSnapshot].Clock.Add(time.Since(u.startTime)),
+		Images:   map[string]*config.Image{},
+		VMs:      map[string]*config.VM{},
+		Clusters: map[string]*config.Cluster{},
+	}
+	if oldSnap := u.cfg.Snapshots[snapshotName]; oldSnap != nil {
+		snap.ID = oldSnap.ID
+	} else {
+		snap.ID = randomSnapshotID()
+	}
+
 	// VM saving is slow, so parallelize it.
 	errs := make(chan error, len(u.vms))
-	for hostname, vm := range u.vms {
-		go func(hostname string, vm *VM) {
-			if err := vm.freeze(); err != nil {
-				errs <- fmt.Errorf("freezing %q: %v", hostname, err)
+	for name, vm := range u.vms {
+		go func(name string, vm *VM) {
+			if err := vm.freeze(snap.ID); err != nil {
+				errs <- fmt.Errorf("freezing %q: %v", name, err)
 				return
 			}
 			errs <- nil
-		}(hostname, vm)
+		}(name, vm)
 	}
 	for range u.vms {
 		if err := <-errs; err != nil {
@@ -382,41 +346,40 @@ func (u *Universe) Save() error {
 		}
 	}
 
-	// Clusters are a json file save, not worth the goroutine
-	// overhead.
-	for name, cluster := range u.clusters {
-		if err := cluster.freeze(); err != nil {
-			u.closeErr = fmt.Errorf("freezing cluster %q: %v", name, err)
-			return u.closeErr
+	for name, disk := range u.images {
+		snap.Images[name] = &config.Image{
+			Name: name,
+			File: disk,
 		}
+	}
+	for _, vm := range u.vms {
+		snap.VMs[vm.cfg.Name] = vm.cfg
+	}
+	for _, cluster := range u.clusters {
+		snap.Clusters[cluster.cfg.Name] = cluster.cfg
 	}
 
 	// By now all VMs should have shutdown during their freeze. Kill
 	// remaining things. But clear all the new* maps so that
 	// closeWithLock doesn't delete stuff we just saved.
-	u.newImages = nil
-	u.newVMs = nil
-	u.newClusters = nil
+	u.images = nil
+	u.vms = nil
+	u.clusters = nil
 	u.closeWithLock()
 
-	if err := u.writeUniverseConfig(); err != nil {
+	u.cfg.Snapshots[snapshotName] = snap
+
+	bs, err := json.MarshalIndent(u.cfg, "", "  ")
+	if err != nil {
+		u.closeErr = err
+		return u.closeErr
+	}
+	if err := ioutil.WriteFile(filepath.Join(u.dir, "config.json"), bs, 0600); err != nil {
 		u.closeErr = err
 		return u.closeErr
 	}
 
 	close(u.closedCh)
-	return nil
-}
-
-func (u *Universe) writeUniverseConfig() error {
-	u.cfg.StartTime = u.cfg.StartTime.Add(time.Since(u.startTime))
-	bs, err := json.MarshalIndent(u.cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling universe config: %v", err)
-	}
-	if err := ioutil.WriteFile(filepath.Join(u.dir, "universe.json"), bs, 0600); err != nil {
-		return fmt.Errorf("writing universe config: %v", err)
-	}
 	return nil
 }
 
@@ -430,20 +393,12 @@ func (u *Universe) Wait(ctx context.Context) error {
 	}
 }
 
-// Image returns the named image, or nil if no such image exists in
-// the universe.
-func (u *Universe) Image(name string) *Image {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.images[name]
-}
-
-// VM returns the VM with the given hostname, or nil if no such VM
+// VM returns the VM with the given name, or nil if no such VM
 // exists in the universe.
-func (u *Universe) VM(hostname string) *VM {
+func (u *Universe) VM(name string) *VM {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.vms[hostname]
+	return u.vms[name]
 }
 
 // VM returns a list of all VMs in the universe.
@@ -481,32 +436,31 @@ func (u *Universe) Clusters() []*Cluster {
 }
 
 func (u *Universe) ipv4() net.IP {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	ret := u.cfg.NextIPv4
-	u.cfg.NextIPv4 = make(net.IP, 4)
-	copy(u.cfg.NextIPv4, ret)
-	u.cfg.NextIPv4[3]++
+	ret := u.nextIPv4
+	u.nextIPv4 = make(net.IP, 4)
+	copy(u.nextIPv4, ret)
+	u.nextIPv4[3]++
 	return ret
 }
 
 func (u *Universe) ipv6() net.IP {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	ret := u.cfg.NextIPv6
-	u.cfg.NextIPv6 = make(net.IP, 16)
-	copy(u.cfg.NextIPv6, ret)
-	u.cfg.NextIPv6[15]++
+	ret := u.nextIPv6
+	u.nextIPv6 = make(net.IP, 16)
+	copy(u.nextIPv6, ret)
+	u.nextIPv6[15]++
 	return ret
 }
 
 func (u *Universe) port() int {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	ret := u.cfg.NextPort
-	u.cfg.NextPort++
+	ret := u.nextPort
+	u.nextPort++
 	return ret
+}
+
+func randomSnapshotID() string {
+	rnd := make([]byte, 32)
+	if _, err := rand.Read(rnd); err != nil {
+		panic("system ran out of randomness")
+	}
+	return fmt.Sprintf("%x", rnd)
 }

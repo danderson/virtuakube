@@ -57,7 +57,7 @@ func newimage(u *virtuakube.Universe, verbose bool) error {
 
 	fmt.Printf("Creating VM base image %q...\n", imageFlags.name)
 
-	if _, err := u.NewImage(cfg); err != nil {
+	if err := u.NewImage(cfg); err != nil {
 		return fmt.Errorf("Creating image: %v", err)
 	}
 

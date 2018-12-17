@@ -70,19 +70,19 @@ type Image struct {
 }
 
 // NewImage builds a VM disk image using the given config.
-func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
+func (u *Universe) NewImage(cfg *ImageConfig) error {
 	if err := checkTools(buildTools); err != nil {
-		return nil, err
+		return err
 	}
 
-	tmp, err := ioutil.TempDir(u.dir, "virtuakube-build-"+cfg.Name)
+	tmp, err := ioutil.TempDir(u.tmpdir, "virtuakube-build-"+cfg.Name)
 	if err != nil {
-		return nil, fmt.Errorf("creating tempdir in %q: %v", u.dir, err)
+		return fmt.Errorf("creating tempdir in %q: %v", u.dir, err)
 	}
 	defer os.RemoveAll(tmp)
 
 	if err := ioutil.WriteFile(filepath.Join(tmp, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
-		return nil, fmt.Errorf("writing dockerfile: %v", err)
+		return fmt.Errorf("writing dockerfile: %v", err)
 	}
 
 	iidPath := filepath.Join(tmp, "iid")
@@ -90,12 +90,12 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("running docker build: %v", err)
+		return fmt.Errorf("running docker build: %v", err)
 	}
 
 	iid, err := ioutil.ReadFile(iidPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading image ID: %v", err)
+		return fmt.Errorf("reading image ID: %v", err)
 	}
 
 	cidPath := filepath.Join(tmp, "cid")
@@ -109,12 +109,12 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("extracting kernel from container: %v", err)
+		return fmt.Errorf("extracting kernel from container: %v", err)
 	}
 
 	cid, err := ioutil.ReadFile(cidPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading image ID: %v", err)
+		return fmt.Errorf("reading image ID: %v", err)
 	}
 
 	tarPath := filepath.Join(tmp, "fs.tar")
@@ -126,7 +126,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("exporting image tarball: %v", err)
+		return fmt.Errorf("exporting image tarball: %v", err)
 	}
 
 	imgPath := filepath.Join(tmp, "fs.img")
@@ -139,40 +139,41 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("creating image file: %v", err)
+		return fmt.Errorf("creating image file: %v", err)
 	}
 
 	if err := os.Remove(tarPath); err != nil {
-		return nil, fmt.Errorf("removing image tarball: %v", err)
+		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
 	tmpu, err := Create(filepath.Join(tmp, "universe"))
 	if err != nil {
-		return nil, fmt.Errorf("creating virtuakube instance: %v", err)
+		return fmt.Errorf("creating virtuakube instance: %v", err)
 	}
 	defer tmpu.Destroy()
 	v, err := tmpu.NewVM(&VMConfig{
-		ImageName:  imgPath,
 		MemoryMiB:  2048,
 		CommandLog: cfg.BuildLog,
-		NoKVM:      cfg.NoKVM,
-		kernelPath: filepath.Join(tmp, "vmlinuz"),
-		initrdPath: filepath.Join(tmp, "initrd.img"),
-		cmdline:    "root=/dev/vda1 rw",
+		kernelConfig: &kernelConfig{
+			kernelPath: filepath.Join(tmp, "vmlinuz"),
+			initrdPath: filepath.Join(tmp, "initrd.img"),
+			cmdline:    "root=/dev/vda1 rw",
+			diskPath:   imgPath,
+		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("creating image VM: %v", err)
+		return fmt.Errorf("creating image VM: %v", err)
 	}
 	if err := v.Start(); err != nil {
-		return nil, fmt.Errorf("starting image VM: %v", err)
+		return fmt.Errorf("starting image VM: %v", err)
 	}
 
 	if err := v.WriteFile("/etc/hosts", []byte(hosts)); err != nil {
-		return nil, fmt.Errorf("install /etc/hosts: %v", err)
+		return fmt.Errorf("install /etc/hosts: %v", err)
 	}
 
 	if err := v.WriteFile("/etc/fstab", []byte(fstab)); err != nil {
-		return nil, fmt.Errorf("install /etc/fstab: %v", err)
+		return fmt.Errorf("install /etc/fstab: %v", err)
 	}
 
 	err = v.RunMultiple(
@@ -187,48 +188,46 @@ func (u *Universe) NewImage(cfg *ImageConfig) (*Image, error) {
 		"chattr +i /etc/machine-id",
 	)
 	if err != nil {
-		return nil, fmt.Errorf("finalize base image configuration: %v", err)
+		return fmt.Errorf("finalize base image configuration: %v", err)
 	}
 
 	for _, f := range cfg.CustomizeFuncs {
 		if err = f(v); err != nil {
-			return nil, fmt.Errorf("applying customize func: %v", err)
+			return fmt.Errorf("applying customize func: %v", err)
 		}
 	}
 
 	if _, err := v.Run("sync"); err != nil {
-		return nil, fmt.Errorf("syncing image disk: %v", err)
+		return fmt.Errorf("syncing image disk: %v", err)
 	}
 
 	v.Run("poweroff")
 	if err := v.Wait(context.Background()); err != nil {
-		return nil, fmt.Errorf("waiting for VM shutdown: %v", err)
+		return fmt.Errorf("waiting for VM shutdown: %v", err)
 	}
 
-	ret := &Image{
-		path: filepath.Join(u.dir, "image", cfg.Name),
-	}
+	ret := randomDiskName()
 
 	cmd = exec.Command(
 		"qemu-img", "convert",
 		"-O", "qcow2",
-		imgPath, ret.path,
+		imgPath, filepath.Join(u.dir, ret),
 	)
 	cmd.Stdout = cfg.BuildLog
 	cmd.Stderr = cfg.BuildLog
 	if err := cmd.Run(); err != nil {
-		os.Remove(ret.path)
-		return nil, fmt.Errorf("running qemu-img convert: %v", err)
+		os.Remove(ret)
+		return fmt.Errorf("running qemu-img convert: %v", err)
 	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.images[cfg.Name] != nil {
+	if u.images[cfg.Name] != "" {
 		panic("I don't know what to do about this yet")
 	}
 	u.images[cfg.Name] = ret
 
-	return ret, nil
+	return nil
 }
 
 // CustomizeInstallK8s is a build customization function that installs

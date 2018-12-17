@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -17,11 +15,13 @@ import (
 	"sync"
 	"time"
 
-	"go.universe.tf/virtuakube/internal/assets"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"go.universe.tf/virtuakube/internal/assets"
+	"go.universe.tf/virtuakube/internal/config"
 )
 
 // ClusterConfig is the configuration for a virtual Kubernetes
@@ -33,30 +33,15 @@ type ClusterConfig struct {
 	NumNodes int
 	// The VMConfig template to use when creating cluster VMs.
 	VMConfig *VMConfig
-	// NetworkAddon is the Kubernetes network addon to install. Can be
-	// an absolute path to a manifest yaml, or one of the builtin
-	// addons "calico", "weave" or "flannel".
-	NetworkAddon string
-}
-
-// Copy returns a deep copy of the cluster config.
-func (c *ClusterConfig) Copy() *ClusterConfig {
-	ret := &ClusterConfig{
-		Name:         c.Name,
-		NumNodes:     c.NumNodes,
-		VMConfig:     c.VMConfig.Copy(),
-		NetworkAddon: c.NetworkAddon,
-	}
-	return ret
 }
 
 // Cluster is a virtual Kubernetes cluster.
 type Cluster struct {
-	cfg *ClusterConfig
-
-	dir string
-
 	mu sync.Mutex
+
+	tmpdir string
+
+	cfg *config.Cluster
 
 	// Kubernetes client connected to the cluster.
 	client *kubernetes.Clientset
@@ -76,120 +61,97 @@ func randomClusterName() string {
 	return fmt.Sprintf("cluster%x", rnd)
 }
 
-func validateClusterConfig(cfg *ClusterConfig) (*ClusterConfig, error) {
-	cfg = cfg.Copy()
-
-	if cfg.VMConfig == nil {
-		return nil, errors.New("missing VMConfig")
-	}
-
-	var err error
-	cfg.VMConfig, err = validateVMConfig(cfg.VMConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	if cfg.Name == "" {
-		cfg.Name = randomClusterName()
-	}
-
-	if cfg.NetworkAddon == "" {
-		return nil, errors.New("must specify network addon")
-	}
-
-	return cfg, nil
-}
-
 // NewCluster creates an unstarted Kubernetes cluster with the given
 // configuration.
 func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
-	cfg, err := validateClusterConfig(cfg)
-	if err != nil {
-		return nil, err
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if cfg == nil {
+		return nil, errors.New("no ClusterConfig specified")
 	}
 
-	if u.Cluster(cfg.Name) != nil {
+	if cfg.VMConfig == nil {
+		return nil, errors.New("ClusterConfig is missing VMConfig")
+	}
+
+	if u.clusters[cfg.Name] != nil {
 		return nil, fmt.Errorf("universe already has a cluster named %q", cfg.Name)
 	}
 
-	dir := filepath.Join(u.dir, "cluster", cfg.Name)
-	if err := os.Mkdir(dir, 0700); err != nil {
-		return nil, fmt.Errorf("creating cluster state dir: %v", err)
+	tmp, err := ioutil.TempDir(u.tmpdir, cfg.Name)
+	if err != nil {
+		return nil, fmt.Errorf("creating temporary directory: %v", err)
 	}
 
 	ret := &Cluster{
-		cfg: cfg,
-		dir: dir,
+		tmpdir: tmp,
+		cfg: &config.Cluster{
+			Name:     cfg.Name,
+			NumNodes: cfg.NumNodes,
+		},
 	}
 
-	controllerCfg := cfg.VMConfig.Copy()
-	controllerCfg.Hostname = fmt.Sprintf("%s-controller", cfg.Name)
-	controllerCfg.PortForwards[30000] = true
-	controllerCfg.PortForwards[6443] = true
-	ret.controller, err = u.NewVM(controllerCfg)
+	controllerCfg := &VMConfig{
+		Name:      fmt.Sprintf("%s-controller", cfg.Name),
+		Image:     cfg.VMConfig.Image,
+		MemoryMiB: cfg.VMConfig.MemoryMiB,
+		PortForwards: map[int]bool{
+			30000: true,
+			6443:  true,
+		},
+		CommandLog: cfg.VMConfig.CommandLog,
+	}
+	for fwd := range cfg.VMConfig.PortForwards {
+		controllerCfg.PortForwards[fwd] = true
+	}
+	ctrl, err := u.newVMWithLock(controllerCfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating controller VM: %v", err)
 	}
+	ret.controller = ctrl
 
 	for i := 0; i < cfg.NumNodes; i++ {
-		nodeCfg := cfg.VMConfig.Copy()
-		nodeCfg.Hostname = fmt.Sprintf("%s-node%d", cfg.Name, i+1)
-		node, err := u.NewVM(nodeCfg)
+		nodeCfg := &VMConfig{
+			Name:         fmt.Sprintf("%s-node%d", cfg.Name, i+1),
+			Image:        cfg.VMConfig.Image,
+			MemoryMiB:    cfg.VMConfig.MemoryMiB,
+			PortForwards: cfg.VMConfig.PortForwards,
+			CommandLog:   cfg.VMConfig.CommandLog,
+		}
+		node, err := u.newVMWithLock(nodeCfg)
 		if err != nil {
 			return nil, fmt.Errorf("creating node %d: %v", i+1, err)
 		}
 		ret.nodes = append(ret.nodes, node)
 	}
 
-	u.mu.Lock()
-	u.mu.Unlock()
-	if u.clusters[cfg.Name] != nil {
-		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Name)
-	}
 	u.clusters[cfg.Name] = ret
-	u.newClusters[cfg.Name] = true
 	return ret, nil
 }
 
-func (u *Universe) thawCluster(name string) (*Cluster, error) {
-	if u.Cluster(name) != nil {
-		return nil, fmt.Errorf("universe already has a cluster named %q", name)
-	}
-
-	dir := filepath.Join(u.dir, "cluster", name)
-
-	bs, err := ioutil.ReadFile(filepath.Join(dir, "cluster.json"))
+func (u *Universe) resumeCluster(cfg *config.Cluster) error {
+	tmp, err := ioutil.TempDir(u.tmpdir, cfg.Name)
 	if err != nil {
-		return nil, err
-	}
-	var cfg ClusterConfig
-	if err := json.Unmarshal(bs, &cfg); err != nil {
-		return nil, err
+		return fmt.Errorf("creating temporary directory: %v", err)
 	}
 
 	ret := &Cluster{
-		cfg:     &cfg,
-		dir:     dir,
-		started: true,
+		tmpdir:     tmp,
+		cfg:        cfg,
+		controller: u.vms[fmt.Sprintf("%s-controller", cfg.Name)],
+		started:    true,
 	}
-
-	ret.controller = u.VM(fmt.Sprintf("%s-controller", cfg.Name))
 	for i := 0; i < ret.cfg.NumNodes; i++ {
-		ret.nodes = append(ret.nodes, u.VM(fmt.Sprintf("%s-node%d", cfg.Name, i+1)))
+		ret.nodes = append(ret.nodes, u.vms[fmt.Sprintf("%s-node%d", cfg.Name, i+1)])
 	}
 
 	if err := ret.mkKubeClient(); err != nil {
-		return nil, err
+		return err
 	}
 
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.clusters[cfg.Name] != nil {
-		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Name)
-	}
-	u.clusters[name] = ret
-
-	return ret, nil
+	u.clusters[cfg.Name] = ret
+	return nil
 }
 
 // Start starts the virtual cluster and waits for it to finish
@@ -214,7 +176,19 @@ func (c *Cluster) Start() error {
 		}
 	}
 
-	if err := c.waitForAllRunningWithClient(context.Background(), c.client); err != nil {
+	err := c.WaitFor(context.Background(), func() (bool, error) {
+		nodes, err := c.client.CoreV1().Nodes().List(metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+
+		if len(nodes.Items) != c.cfg.NumNodes+1 {
+			return false, nil
+		}
+
+		return true, nil
+	})
+	if err != nil {
 		return err
 	}
 
@@ -222,12 +196,21 @@ func (c *Cluster) Start() error {
 }
 
 func (c *Cluster) mkKubeClient() error {
-	config, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig())
+	if err := ioutil.WriteFile(filepath.Join(c.tmpdir, "kubeconfig"), c.cfg.Kubeconfig, 0600); err != nil {
+		return fmt.Errorf("writing kubeconfig to tmpdir: %v", err)
+	}
+
+	config, err := clientcmd.NewClientConfigFromBytes(c.cfg.Kubeconfig)
 	if err != nil {
 		return err
 	}
 
-	c.client, err = kubernetes.NewForConfig(config)
+	restcfg, err := config.ClientConfig()
+	if err != nil {
+		return err
+	}
+
+	c.client, err = kubernetes.NewForConfig(restcfg)
 	if err != nil {
 		return err
 	}
@@ -238,10 +221,10 @@ func (c *Cluster) mkKubeClient() error {
 var addrRe = regexp.MustCompile("https://.*:6443")
 
 func (c *Cluster) startController() error {
-	addons, err := assembleAddons(c.cfg.NetworkAddon)
-	if err != nil {
-		return err
-	}
+	// addons, err := assembleAddons(c.cfg.NetworkAddon)
+	// if err != nil {
+	// 	return err
+	// }
 
 	if err := c.controller.Start(); err != nil {
 		return err
@@ -271,14 +254,14 @@ apiServerCertSANs:
 	if err := c.controller.WriteFile("/tmp/k8s.conf", []byte(controllerConfig)); err != nil {
 		return err
 	}
-	if err := c.controller.WriteFile("/tmp/addons.yaml", addons); err != nil {
-		return err
-	}
+	// if err := c.controller.WriteFile("/tmp/addons.yaml", addons); err != nil {
+	// 	return err
+	// }
 
-	err = c.controller.RunMultiple(
+	err := c.controller.RunMultiple(
 		"kubeadm init --config=/tmp/k8s.conf --ignore-preflight-errors=NumCPU",
 		"KUBECONFIG=/etc/kubernetes/admin.conf kubectl taint nodes --all node-role.kubernetes.io/master-",
-		"KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /tmp/addons.yaml",
+		//"KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /tmp/addons.yaml",
 	)
 	if err != nil {
 		return err
@@ -288,10 +271,7 @@ apiServerCertSANs:
 	if err != nil {
 		return err
 	}
-	kubeconfig = addrRe.ReplaceAll(kubeconfig, []byte("https://127.0.0.1:"+strconv.Itoa(c.controller.ForwardedPort(6443))))
-	if err := ioutil.WriteFile(c.Kubeconfig(), kubeconfig, 0600); err != nil {
-		return err
-	}
+	c.cfg.Kubeconfig = addrRe.ReplaceAll(kubeconfig, []byte("https://127.0.0.1:"+strconv.Itoa(c.controller.ForwardedPort(6443))))
 
 	return c.mkKubeClient()
 }
@@ -331,10 +311,40 @@ func (c *Cluster) Name() string {
 	return c.cfg.Name
 }
 
-// Kubeconfig returns the path to a kubectl configuration file with
-// administrator credentials for the cluster.
 func (c *Cluster) Kubeconfig() string {
-	return filepath.Join(c.dir, "kubeconfig")
+	return filepath.Join(c.tmpdir, "kubeconfig")
+}
+
+func (c *Cluster) InstallAddon(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.started {
+		return errors.New("cluster not started yet")
+	}
+
+	// Figure out if the addon is builtin or external, and get the bytes.
+	var (
+		bs  []byte
+		err error
+	)
+	if !strings.ContainsAny(name, "./") {
+		bs, err = assets.Asset("addon/" + name + ".yaml")
+	} else {
+		bs, err = ioutil.ReadFile(name)
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := c.controller.WriteFile("/tmp/addon.yaml", bs); err != nil {
+		return err
+	}
+
+	if _, err := c.controller.Run("kubectl apply -f /tmp/addon.yaml"); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // KubernetesClient returns a kubernetes client connected to the
@@ -345,29 +355,8 @@ func (c *Cluster) KubernetesClient() *kubernetes.Clientset {
 	return c.client
 }
 
-// WaitFor invokes the test function repeatedly until it returns true,
-// or the context times out.
-func (c *Cluster) WaitFor(ctx context.Context, test func() (bool, error)) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		ok, err := test()
-		if err != nil {
-			return err
-		}
-		if ok {
-			return nil
-		}
-
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func (c *Cluster) waitForAllRunningWithClient(ctx context.Context, client *kubernetes.Clientset) error {
+func (c *Cluster) WaitForClusterReady(ctx context.Context) error {
+	client := c.KubernetesClient()
 	return c.WaitFor(ctx, func() (bool, error) {
 		nodes, err := client.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
@@ -407,6 +396,28 @@ func (c *Cluster) waitForAllRunningWithClient(ctx context.Context, client *kuber
 	})
 }
 
+// WaitFor invokes the test function repeatedly until it returns true,
+// or the context times out.
+func (c *Cluster) WaitFor(ctx context.Context, test func() (bool, error)) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		ok, err := test()
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // Controller returns the VM for the cluster controller node.
 func (c *Cluster) Controller() *VM {
 	c.mu.Lock()
@@ -428,26 +439,6 @@ func (c *Cluster) Registry() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.controller.ForwardedPort(30000)
-}
-
-func (c *Cluster) freeze() error {
-	bs, err := ioutil.ReadFile(c.Kubeconfig())
-	if err != nil {
-		return fmt.Errorf("reading kubeconfig: %v", err)
-	}
-
-	c.cfg.VMConfig.CommandLog = nil
-
-	bs, err = json.MarshalIndent(c.cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling cluster config: %v", err)
-	}
-
-	if err := ioutil.WriteFile(filepath.Join(c.dir, "cluster.json"), bs, 0600); err != nil {
-		return fmt.Errorf("writing cluster config: %v", err)
-	}
-
-	return nil
 }
 
 func networkAddonBytes(addon string) ([]byte, error) {

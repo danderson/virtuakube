@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -21,71 +19,49 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"go.universe.tf/virtuakube/internal/config"
 )
+
+var logCommands = true
 
 // VMConfig is the configuration for a virtual machine.
 type VMConfig struct {
-	ImageName    string
-	Hostname     string
+	Name         string
+	Image        string
 	MemoryMiB    int
 	PortForwards map[int]bool
 	CommandLog   io.Writer
-	NoKVM        bool
 
 	// Only available to image builder.
+	*kernelConfig
+}
+
+// kernelConfig is the configuration for booting qemu with an external
+// kernel.
+type kernelConfig struct {
+	diskPath   string
 	kernelPath string
 	initrdPath string
 	cmdline    string
 }
 
-// Copy returns a deep copy of the VM config.
-func (v *VMConfig) Copy() *VMConfig {
-	ret := &VMConfig{
-		ImageName:    v.ImageName,
-		Hostname:     v.Hostname,
-		MemoryMiB:    v.MemoryMiB,
-		PortForwards: make(map[int]bool),
-		CommandLog:   v.CommandLog,
-		NoKVM:        v.NoKVM,
-		kernelPath:   v.kernelPath,
-		initrdPath:   v.initrdPath,
-		cmdline:      v.cmdline,
-	}
-	for fwd, v := range v.PortForwards {
-		ret.PortForwards[fwd] = v
-	}
-	return ret
-}
-
-type vmFreezeConfig struct {
-	Config       *VMConfig
-	MAC          string
-	PortForwards map[int]int
-	IPv4         net.IP
-	IPv6         net.IP
-}
-
 // VM is a virtual machine.
 type VM struct {
-	cfg *vmFreezeConfig
-
-	dir string
-
-	// The subjective start time of the universe within the universe,
-	// and the start time outside the universe. We use these two to
-	// calculate what time it currently is inside the VM.
-	startTimeInUniverse time.Time
-	startTimeWallClock  time.Time
+	cfg *config.VM
 
 	// Closed when the VM has exited.
 	stopped chan bool
+
+	universeStartTime time.Time
+	universeOpenTime  time.Time
 
 	mu sync.Mutex
 
 	// Qemu subprocess that runs the VM.
 	cmd *exec.Cmd
 
-	// Link to the qemu monitor. Used only to handle freezing.
+	// Link to the qemu monitor. Used to handle freezing.
 	monIn  io.WriteCloser
 	monOut io.ReadCloser
 
@@ -98,36 +74,20 @@ type VM struct {
 	closed  bool
 }
 
-func validateVMConfig(cfg *VMConfig) (*VMConfig, error) {
-	if cfg == nil || cfg.ImageName == "" {
-		return nil, errors.New("no ImageName in VMConfig")
-	}
-
-	cfg = cfg.Copy()
-
-	if cfg.Hostname == "" {
-		cfg.Hostname = randomHostname()
-	}
-	if cfg.MemoryMiB == 0 {
-		cfg.MemoryMiB = 1024
-	}
-
-	cfg.PortForwards[22] = true
-
-	return cfg, nil
-}
-
-func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) (*VM, error) {
+func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM, error) {
 	ret := &VM{
-		cfg:                 cfg,
-		startTimeInUniverse: u.cfg.StartTime,
-		startTimeWallClock:  u.startTime,
-		stopped:             make(chan bool),
-		dir:                 dir,
+		cfg:               cfg,
+		stopped:           make(chan bool),
+		universeStartTime: u.cfg.Snapshots[u.activeSnapshot].Clock,
+		universeOpenTime:  u.startTime,
+	}
+	diskPath := cfg.DiskFile
+	if !filepath.IsAbs(diskPath) {
+		diskPath = filepath.Join(u.dir, diskPath)
 	}
 	ret.cmd = exec.Command(
 		"qemu-system-x86_64",
-		"-m", strconv.Itoa(cfg.Config.MemoryMiB),
+		"-m", strconv.Itoa(cfg.MemoryMiB),
 		"-device", "virtio-net,netdev=net0,mac=52:54:00:12:34:56",
 		"-device", fmt.Sprintf("virtio-net,netdev=net1,mac=%s", cfg.MAC),
 		"-device", "virtio-rng-pci,rng=rng0",
@@ -141,24 +101,23 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 		"-serial", "null",
 		"-monitor", "stdio",
 		"-S",
+		"-enable-kvm",
 	)
-	if !cfg.Config.NoKVM {
-		ret.cmd.Args = append(ret.cmd.Args, "-enable-kvm")
-	}
-	if cfg.Config.kernelPath != "" {
+	if kernel != nil {
 		ret.cmd.Args = append(ret.cmd.Args,
-			"-kernel", cfg.Config.kernelPath,
-			"-initrd", cfg.Config.initrdPath,
-			"-append", cfg.Config.cmdline,
+			"-kernel", kernel.kernelPath,
+			"-initrd", kernel.initrdPath,
+			"-append", kernel.cmdline,
 		)
 	}
 	if resume {
-		ret.cmd.Args = append(ret.cmd.Args, "-loadvm", "snap")
+		ret.cmd.Args = append(ret.cmd.Args, "-loadvm", u.cfg.Snapshots[u.activeSnapshot].ID)
 	}
 	ret.cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
 	ret.cmd.Stderr = os.Stderr
+	fmt.Println(strings.Join(ret.cmd.Args, " "))
 
 	monIn, err := ret.cmd.StdinPipe()
 	if err != nil {
@@ -184,114 +143,88 @@ func (u *Universe) mkVM(cfg *vmFreezeConfig, dir, diskPath string, resume bool) 
 		return nil, fmt.Errorf("reading qemu monitor prompt: %v", err)
 	}
 
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.vms[cfg.Config.Hostname] != nil {
-		ret.closeWithLock()
-		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Config.Hostname)
-	}
-	u.vms[cfg.Config.Hostname] = ret
-	u.newVMs[cfg.Config.Hostname] = !resume
-
+	u.vms[cfg.Name] = ret
 	return ret, nil
 }
 
 // NewVM creates an unstarted virtual machine with the given configuration.
 func (u *Universe) NewVM(cfg *VMConfig) (*VM, error) {
-	cfg, err := validateVMConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("validating VM config: %v", err)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.newVMWithLock(cfg)
+}
+
+func (u *Universe) newVMWithLock(cfg *VMConfig) (*VM, error) {
+	if cfg == nil {
+		return nil, errors.New("no VMConfig specified")
 	}
 
-	if u.VM(cfg.Hostname) != nil {
-		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Hostname)
+	if u.vms[cfg.Name] != nil {
+		return nil, fmt.Errorf("universe already has a VM named %q", cfg.Name)
 	}
 
-	dir := filepath.Join(u.dir, "vm", cfg.Hostname)
-	if err := os.Mkdir(dir, 0700); err != nil {
-		return nil, fmt.Errorf("creating VM state dir: %v", err)
+	vmcfg := &config.VM{
+		Name:         cfg.Name,
+		DiskFile:     randomDiskName(),
+		MemoryMiB:    cfg.MemoryMiB,
+		PortForwards: map[int]int{},
+		MAC:          randomMAC(),
+		IPv4:         u.ipv4(),
+		IPv6:         u.ipv6(),
+	}
+	if vmcfg.Name == "" {
+		vmcfg.Name = randomHostname()
+	}
+	if vmcfg.MemoryMiB == 0 {
+		vmcfg.MemoryMiB = 1024
+	}
+	wantPorts := []int{}
+	if cfg.PortForwards == nil {
+		cfg.PortForwards = map[int]bool{}
+	}
+	cfg.PortForwards[22] = true
+	for fwd := range cfg.PortForwards {
+		wantPorts = append(wantPorts, fwd)
+	}
+	sort.Ints(wantPorts)
+	for _, fwd := range wantPorts {
+		vmcfg.PortForwards[fwd] = u.port()
 	}
 
-	diskPath := cfg.ImageName
-	if cfg.kernelPath == "" {
-		img := u.Image(cfg.ImageName)
-		if img == nil {
-			return nil, fmt.Errorf("no such image %q", cfg.ImageName)
+	if cfg.kernelConfig == nil {
+		img := u.images[cfg.Image]
+		if img == "" {
+			return nil, fmt.Errorf("universe doesn't have an image named %q", cfg.Image)
 		}
-
-		diskPath = filepath.Join(dir, "disk.qcow2")
 
 		disk := exec.Command(
 			"qemu-img",
 			"create",
 			"-f", "qcow2",
-			"-b", img.path,
+			"-b", filepath.Join(u.dir, img),
 			"-f", "qcow2",
-			diskPath,
+			filepath.Join(u.dir, vmcfg.DiskFile),
 		)
 		out, err := disk.CombinedOutput()
 		if err != nil {
 			return nil, fmt.Errorf("creating VM disk: %v\n%s", err, string(out))
 		}
+	} else {
+		vmcfg.DiskFile = cfg.kernelConfig.diskPath
 	}
 
-	wantPorts := []int{}
-	for fwd := range cfg.PortForwards {
-		wantPorts = append(wantPorts, fwd)
-	}
-	sort.Ints(wantPorts)
-	fwds := map[int]int{}
-	for _, fwd := range wantPorts {
-		fwds[fwd] = u.port()
-	}
-
-	fcfg := &vmFreezeConfig{
-		Config:       cfg,
-		MAC:          randomMAC(),
-		PortForwards: fwds,
-		IPv4:         u.ipv4(),
-		IPv6:         u.ipv6(),
-	}
-
-	vm, err := u.mkVM(fcfg, dir, diskPath, false)
+	vm, err := u.mkVM(vmcfg, cfg.kernelConfig, false)
 	if err != nil {
 		return nil, fmt.Errorf("creating VM: %v", err)
-	}
-
-	if err := vm.writeVMConfig(); err != nil {
-		vm.Close()
-		return nil, fmt.Errorf("writing VM config: %v", err)
 	}
 
 	return vm, nil
 }
 
-func (v *VM) writeVMConfig() error {
-	bs, err := json.MarshalIndent(v.cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling frozen VM config: %v", err)
-	}
-	cfgPath := filepath.Join(v.dir, "config.json")
-	if err := ioutil.WriteFile(cfgPath, bs, 0600); err != nil {
-		return fmt.Errorf("writing frozen VM config: %v", err)
-	}
-	return nil
-}
-
-func (u *Universe) thawVM(hostname string) (*VM, error) {
-	dir := filepath.Join(u.dir, "vm", hostname)
-	cfgPath := filepath.Join(dir, "config.json")
-	bs, err := ioutil.ReadFile(cfgPath)
-	if err != nil {
-		return nil, err
-	}
-	var cfg vmFreezeConfig
-	if err := json.Unmarshal(bs, &cfg); err != nil {
-		return nil, err
-	}
-
-	diskPath := filepath.Join(dir, "disk.qcow2")
-	return u.mkVM(&cfg, dir, diskPath, true)
+func (u *Universe) resumeVM(cfg *config.VM) (*VM, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.mkVM(cfg, nil, true)
 }
 
 // Start starts the virtual machine and waits for it to finish
@@ -302,7 +235,7 @@ func (v *VM) Start() error {
 	}
 
 	err := v.RunMultiple(
-		"hostnamectl set-hostname "+v.cfg.Config.Hostname,
+		"hostnamectl set-hostname "+v.cfg.Name,
 		fmt.Sprintf("ip addr add %s/24 dev ens4", v.cfg.IPv4),
 		fmt.Sprintf("ip addr add %s/24 dev ens4", v.cfg.IPv6),
 		"ip link set dev ens4 up",
@@ -360,7 +293,7 @@ func (v *VM) boot() error {
 	if _, err := v.runWithLock("timedatectl set-ntp false"); err != nil {
 		return err
 	}
-	if _, err := v.runWithLock(fmt.Sprintf("timedatectl set-time %q", v.startTimeInUniverse.Add(time.Since(v.startTimeWallClock)).Format("2006-01-02 15:04:05"))); err != nil {
+	if _, err := v.runWithLock(fmt.Sprintf("timedatectl set-time %q", v.universeStartTime.Add(time.Since(v.universeOpenTime)).Format("2006-01-02 15:04:05"))); err != nil {
 		return err
 	}
 
@@ -394,10 +327,10 @@ func (v *VM) runWithLock(command string) ([]byte, error) {
 	var out bytes.Buffer
 	sess.Stdout = &out
 	sess.Stderr = &out
-	if v.cfg.Config.CommandLog != nil {
-		sess.Stdout = io.MultiWriter(&out, v.cfg.Config.CommandLog)
+	if logCommands {
+		sess.Stdout = io.MultiWriter(&out, os.Stdout)
 		sess.Stderr = sess.Stdout
-		fmt.Fprintln(v.cfg.Config.CommandLog, "+ "+command)
+		fmt.Fprintln(os.Stdout, "+ "+command)
 	}
 
 	if err := sess.Run(command); err != nil {
@@ -428,8 +361,8 @@ func (v *VM) WriteFile(path string, bs []byte) error {
 	}
 	defer sess.Close()
 	sess.Stdin = bytes.NewBuffer(bs)
-	if v.cfg.Config.CommandLog != nil {
-		fmt.Fprintf(v.cfg.Config.CommandLog, "+ (write file %s)\n", path)
+	if logCommands {
+		fmt.Fprintf(os.Stdout, "+ (write file %s)\n", path)
 	}
 
 	return sess.Run("cat >" + path)
@@ -445,8 +378,8 @@ func (v *VM) ReadFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer sess.Close()
-	if v.cfg.Config.CommandLog != nil {
-		fmt.Fprintf(v.cfg.Config.CommandLog, "+ (read file %s)\n", path)
+	if logCommands {
+		fmt.Fprintf(os.Stdout, "+ (read file %s)\n", path)
 	}
 	return sess.Output("cat " + path)
 }
@@ -477,7 +410,7 @@ func (v *VM) closeWithLock() error {
 	return nil
 }
 
-func (v *VM) freeze() error {
+func (v *VM) freeze(snapshot string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
@@ -495,7 +428,7 @@ func (v *VM) freeze() error {
 	}
 
 	// Write the snapshot.
-	if _, err := fmt.Fprintf(v.monIn, "savevm snap\n"); err != nil {
+	if _, err := fmt.Fprintf(v.monIn, "savevm %s\n", snapshot); err != nil {
 		return err
 	}
 	if _, err := readToPrompt(v.monOut); err != nil {
@@ -511,19 +444,14 @@ func (v *VM) freeze() error {
 	}
 	<-v.stopped
 
-	// Clear CommandLog, since we can't persist that, and we just
-	// stopped the VM anyway.
-	v.cfg.Config.CommandLog = nil
-
-	// Save the VM config
-	return v.writeVMConfig()
+	return nil
 }
 
 // Hostname returns the configured hostname of the VM. It might be
 // different from the VM's actual hostname if its hostname was changed
 // after boot by something other than virtuakube.
 func (v *VM) Hostname() string {
-	return v.cfg.Config.Hostname
+	return v.cfg.Name
 }
 
 // ForwardedPort returns the port on localhost that maps to the given
@@ -584,6 +512,14 @@ func randomHostname() string {
 		panic("system ran out of randomness")
 	}
 	return fmt.Sprintf("vm%x", rnd)
+}
+
+func randomDiskName() string {
+	rnd := make([]byte, 16)
+	if _, err := rand.Read(rnd); err != nil {
+		panic("system ran out of randomness")
+	}
+	return fmt.Sprintf("disk-%x", rnd)
 }
 
 // Make a series of "hostfwd" statements for the qemu commandline.

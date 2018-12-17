@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"go.universe.tf/virtuakube"
@@ -21,7 +23,7 @@ var clusterFlags = struct {
 	nodes    int
 	image    string
 	memory   int
-	addon    string
+	addons   []string
 }{}
 
 func init() {
@@ -30,7 +32,7 @@ func init() {
 	addVMFlags(newclusterCmd)
 	newclusterCmd.Flags().StringVar(&clusterFlags.name, "name", "", "name for the new cluster")
 	newclusterCmd.Flags().IntVar(&clusterFlags.nodes, "nodes", 1, "number of nodes in the cluster")
-	newclusterCmd.Flags().StringVar(&clusterFlags.addon, "network-addon", "calico", "network addon to install")
+	newclusterCmd.Flags().StringSliceVar(&clusterFlags.addons, "addons", []string{"calico"}, "addons to install")
 	newclusterCmd.Flags().StringVar(&clusterFlags.image, "image", "", "base disk image to use")
 	newclusterCmd.Flags().IntVar(&clusterFlags.memory, "memory", 1024, "amount of memory to give the VMs in GiB")
 }
@@ -40,10 +42,9 @@ func newcluster(u *virtuakube.Universe, verbose bool) error {
 		Name:     clusterFlags.name,
 		NumNodes: clusterFlags.nodes,
 		VMConfig: &virtuakube.VMConfig{
-			ImageName: clusterFlags.image,
+			Image:     clusterFlags.image,
 			MemoryMiB: clusterFlags.memory,
 		},
-		NetworkAddon: clusterFlags.addon,
 	}
 	if verbose {
 		cfg.VMConfig.CommandLog = os.Stdout
@@ -51,12 +52,24 @@ func newcluster(u *virtuakube.Universe, verbose bool) error {
 
 	fmt.Printf("Creating cluster %q...\n", clusterFlags.name)
 
-	vm, err := u.NewCluster(cfg)
+	cluster, err := u.NewCluster(cfg)
 	if err != nil {
 		return fmt.Errorf("Creating cluster: %v", err)
 	}
-	if err = vm.Start(); err != nil {
+	if err = cluster.Start(); err != nil {
 		return fmt.Errorf("Starting cluster: %v", err)
+	}
+
+	if len(clusterFlags.addons) != 0 {
+		fmt.Printf("Installing addons %s...\n", strings.Join(clusterFlags.addons, ", "))
+		for _, addon := range clusterFlags.addons {
+			if err := cluster.InstallAddon(addon); err != nil {
+				return fmt.Errorf("installing addon %q: %v", addon, err)
+			}
+		}
+		if err := cluster.WaitForClusterReady(context.Background()); err != nil {
+			return fmt.Errorf("waiting for cluster to be ready: %v", err)
+		}
 	}
 
 	fmt.Printf("Created cluster %q\n", clusterFlags.name)
