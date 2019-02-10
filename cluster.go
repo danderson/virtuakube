@@ -34,7 +34,9 @@ type ClusterConfig struct {
 	// NumNodes is the number of Kubernetes worker nodes to run.
 	// TODO: only supports 1 currently
 	NumNodes int
-	// The VMConfig template to use when creating cluster VMs.
+	// The VMConfig template to use when creating cluster VMs. The
+	// first configured VM network will be used for Kubernetes control
+	// traffic.
 	VMConfig *VMConfig
 }
 
@@ -76,6 +78,10 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 
 	if cfg.VMConfig == nil {
 		return nil, errors.New("ClusterConfig is missing VMConfig")
+	}
+
+	if len(cfg.VMConfig.Networks) == 0 {
+		return nil, errors.New("ClusterConfig's VMConfig does not specify any networks")
 	}
 
 	if u.clusters[cfg.Name] != nil {
@@ -253,7 +259,7 @@ kubernetesVersion: "1.13.0"
 clusterName: "virtuakube"
 apiServerCertSANs:
 - "127.0.0.1"
-`, c.controller.IPv4(), c.controller.IPv4())
+`, c.controller.IPv4("TODO"), c.controller.IPv4("TODO"))
 	if err := c.controller.WriteFile("/tmp/k8s.conf", []byte(controllerConfig)); err != nil {
 		return err
 	}
@@ -285,7 +291,7 @@ func (c *Cluster) startNode(node *VM) error {
 	}
 
 	controllerAddr := &net.TCPAddr{
-		IP:   c.controller.IPv4(),
+		IP:   c.controller.IPv4("TODO"),
 		Port: 6443,
 	}
 	nodeConfig := fmt.Sprintf(`
@@ -298,7 +304,7 @@ discoveryTokenAPIServers:
 nodeRegistration:
   kubeletExtraArgs:
     node-ip: %s
-`, controllerAddr, node.IPv4())
+`, controllerAddr, node.IPv4("TODO"))
 	if err := node.WriteFile("/tmp/k8s.conf", []byte(nodeConfig)); err != nil {
 		return err
 	}

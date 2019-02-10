@@ -7,13 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"go.universe.tf/virtuakube/internal/config"
@@ -52,9 +50,6 @@ type Universe struct {
 
 	tmpdir string
 
-	// VDE switch control socket, used by VMs to attach to the switch.
-	switchSock string
-
 	// Channel that gets closed right at the end of Close, Destroy, or
 	// Save. Wait waits for this channel to get closed.
 	closedCh chan bool
@@ -70,8 +65,7 @@ type Universe struct {
 	// Current network parameters as they mutate while the universe is
 	// running.
 	nextPort int
-	nextIPv4 net.IP
-	nextIPv6 net.IP
+	nextNet  int
 
 	// Name of the currently running snapshot.
 	activeSnapshot string
@@ -83,7 +77,7 @@ type Universe struct {
 
 	// Resources in the universe: a virtual switch, some VMs, some k8s
 	// clusters.
-	swtch    *exec.Cmd
+	networks map[string]*Network
 	images   map[string]string // name -> diskpath
 	vms      map[string]*VM
 	clusters map[string]*Cluster
@@ -103,8 +97,6 @@ func Create(dir string) (*Universe, error) {
 				Name:     "",
 				ID:       randomSnapshotID(),
 				NextPort: 50000,
-				NextIPv4: net.ParseIP("172.20.0.1"),
-				NextIPv6: net.ParseIP("fd00::1"),
 				Clock:    time.Now(),
 			},
 		},
@@ -155,53 +147,38 @@ func Open(dir string, snapshot string) (*Universe, error) {
 		return nil, fmt.Errorf("creating temporary directory: %v", err)
 	}
 
-	sock, err := filepath.Rel(dir, filepath.Join(tmpdir, "switch"))
-	if err != nil {
-		return nil, fmt.Errorf("getting switch socket path: %v", err)
-	}
-
 	ret := &Universe{
 		dir:            dir,
 		tmpdir:         tmpdir,
-		switchSock:     sock,
 		closedCh:       make(chan bool),
 		cfg:            cfg,
 		nextPort:       snap.NextPort,
-		nextIPv4:       snap.NextIPv4.To4(),
-		nextIPv6:       snap.NextIPv6,
+		nextNet:        snap.NextNet,
 		activeSnapshot: snapshot,
 		startTime:      time.Now(),
-		swtch: exec.Command(
-			"vde_switch",
-			"--sock", sock,
-			"-m", "0600",
-		),
-		images:   map[string]string{},
-		vms:      map[string]*VM{},
-		clusters: map[string]*Cluster{},
+		networks:       map[string]*Network{},
+		images:         map[string]string{},
+		vms:            map[string]*VM{},
+		clusters:       map[string]*Cluster{},
 	}
-	ret.swtch.Dir = ret.dir
-	ret.swtch.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
-
-	if err := ret.swtch.Start(); err != nil {
-		ret.Close()
-		return nil, err
-	}
-	// Destroy the universe if the switch exits.
-	go func() {
-		ret.swtch.Wait()
-		ret.Close()
-	}()
 
 	for _, img := range snap.Images {
 		ret.images[img.Name] = img.File
 	}
 
+	// thaw networks first, because VMs need them.
+	for _, net := range snap.Networks {
+		if err := ret.resumeNetwork(net); err != nil {
+			return nil, err
+		}
+	}
+
 	// thaw all VMs concurrently. This is the expensive step where
 	// they struggle to load their huge memory snapshots. At the end
 	// of thaw, they're fully loaded, but with their CPUs stopped.
+	//
+	// TODO: this isn't actually parallel because we lock the universe
+	// in each resumeVM call *headdesk*
 	vms := snap.VMs
 	res := make(chan error, len(vms))
 	for _, vmcfg := range vms {
@@ -265,7 +242,11 @@ func (u *Universe) closeWithLock() {
 		}
 	}
 
-	u.swtch.Process.Kill()
+	for _, net := range u.networks {
+		if err := net.Close(); err != nil {
+			u.closeErr = err
+		}
+	}
 
 	snap := u.cfg.Snapshots[u.activeSnapshot]
 
@@ -320,9 +301,9 @@ func (u *Universe) Save(snapshotName string) error {
 	snap := &config.Snapshot{
 		Name:     snapshotName,
 		NextPort: u.nextPort,
-		NextIPv4: u.nextIPv4,
-		NextIPv6: u.nextIPv6,
+		NextNet:  u.nextNet,
 		Clock:    u.cfg.Snapshots[u.activeSnapshot].Clock.Add(time.Since(u.startTime)),
+		Networks: map[string]*config.Network{},
 		Images:   map[string]*config.Image{},
 		VMs:      map[string]*config.VM{},
 		Clusters: map[string]*config.Cluster{},
@@ -351,6 +332,9 @@ func (u *Universe) Save(snapshotName string) error {
 		}
 	}
 
+	for _, network := range u.networks {
+		snap.Networks[network.cfg.Name] = network.cfg
+	}
 	for name, disk := range u.images {
 		snap.Images[name] = &config.Image{
 			Name: name,
@@ -367,6 +351,7 @@ func (u *Universe) Save(snapshotName string) error {
 	// By now all VMs should have shutdown during their freeze. Kill
 	// remaining things. But clear all the new* maps so that
 	// closeWithLock doesn't delete stuff we just saved.
+	u.networks = nil
 	u.images = nil
 	u.vms = nil
 	u.clusters = nil
@@ -456,25 +441,15 @@ func (u *Universe) Clusters() []*Cluster {
 	return ret
 }
 
-func (u *Universe) ipv4() net.IP {
-	ret := u.nextIPv4
-	u.nextIPv4 = make(net.IP, 4)
-	copy(u.nextIPv4, ret)
-	u.nextIPv4[3]++
-	return ret
-}
-
-func (u *Universe) ipv6() net.IP {
-	ret := u.nextIPv6
-	u.nextIPv6 = make(net.IP, 16)
-	copy(u.nextIPv6, ret)
-	u.nextIPv6[15]++
-	return ret
-}
-
 func (u *Universe) port() int {
 	ret := u.nextPort
 	u.nextPort++
+	return ret
+}
+
+func (u *Universe) net() int {
+	ret := u.nextNet
+	u.nextNet++
 	return ret
 }
 

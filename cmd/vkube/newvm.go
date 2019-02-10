@@ -20,6 +20,7 @@ var vmFlags = struct {
 	image    string
 	name     string
 	memory   int
+	networks []string
 }{}
 
 func addVMFlags(cmd *cobra.Command) {
@@ -31,6 +32,7 @@ func init() {
 	newvmCmd.Flags().StringVar(&vmFlags.image, "image", "", "base disk image to use")
 	newvmCmd.Flags().StringVar(&vmFlags.name, "name", "", "name for the VM")
 	newvmCmd.Flags().IntVar(&vmFlags.memory, "memory", 1024, "amount of memory to give the VM in GiB")
+	newvmCmd.Flags().StringSliceVar(&vmFlags.networks, "networks", []string{}, "networks to attach the VM to")
 }
 
 func newvm(u *virtuakube.Universe, verbose bool) error {
@@ -38,6 +40,7 @@ func newvm(u *virtuakube.Universe, verbose bool) error {
 		Name:      vmFlags.name,
 		Image:     vmFlags.image,
 		MemoryMiB: vmFlags.memory,
+		Networks:  vmFlags.networks,
 	}
 	if verbose {
 		cfg.CommandLog = os.Stdout

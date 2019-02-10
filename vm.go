@@ -30,6 +30,7 @@ type VMConfig struct {
 	Name         string
 	Image        string
 	MemoryMiB    int
+	Networks     []string
 	PortForwards map[int]bool
 	CommandLog   io.Writer
 
@@ -84,22 +85,29 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 
 	ret.cmd = exec.Command(
 		"qemu-system-x86_64",
+		"-machine", "q35",
 		"-m", strconv.Itoa(cfg.MemoryMiB),
 		"-device", "virtio-net,netdev=net0,mac=52:54:00:12:34:56",
-		"-device", fmt.Sprintf("virtio-net,netdev=net1,mac=%s", cfg.MAC),
 		"-device", "virtio-rng-pci,rng=rng0",
 		"-device", "virtio-serial",
 		"-object", "rng-random,filename=/dev/urandom,id=rng0",
 		"-netdev", fmt.Sprintf("user,id=net0,%s", makeForwards(cfg.PortForwards)),
-		"-netdev", fmt.Sprintf("vde,id=net1,sock=%s", u.switchSock),
 		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", cfg.DiskFile),
-		"-nographic",
+		//"-nographic",
 		"-rtc", "clock=vm",
 		"-serial", "null",
 		"-monitor", "stdio",
 		"-S",
 		"-enable-kvm",
 	)
+
+	for i, net := range cfg.Networks {
+		ret.cmd.Args = append(ret.cmd.Args,
+			"-device", fmt.Sprintf("virtio-net,netdev=net%d,addr=%d,mac=%s", i+1, i+5, cfg.MAC[net]),
+			"-netdev", fmt.Sprintf("vde,id=net%d,sock=%s", i+1, u.networks[net].sock),
+		)
+	}
+
 	if kernel != nil {
 		ret.cmd.Args = append(ret.cmd.Args,
 			"-kernel", kernel.kernelPath,
@@ -166,15 +174,26 @@ func (u *Universe) newVMWithLock(cfg *VMConfig) (*VM, error) {
 		DiskFile:     randomDiskName(),
 		MemoryMiB:    cfg.MemoryMiB,
 		PortForwards: map[int]int{},
-		MAC:          randomMAC(),
-		IPv4:         u.ipv4(),
-		IPv6:         u.ipv6(),
+		Networks:     cfg.Networks,
+		MAC:          map[string]string{},
+		IPv4:         map[string]net.IP{},
+		IPv6:         map[string]net.IP{},
 	}
 	if vmcfg.Name == "" {
 		vmcfg.Name = randomHostname()
 	}
 	if vmcfg.MemoryMiB == 0 {
 		vmcfg.MemoryMiB = 1024
+	}
+	for _, net := range vmcfg.Networks {
+		nw := u.networks[net]
+		if nw == nil {
+			return nil, fmt.Errorf("universe doesn't have a network named %q", net)
+		}
+		ip4, ip6 := nw.ip()
+		vmcfg.MAC[net] = randomMAC()
+		vmcfg.IPv4[net] = ip4
+		vmcfg.IPv6[net] = ip6
 	}
 	wantPorts := []int{}
 	if cfg.PortForwards == nil {
@@ -232,15 +251,22 @@ func (v *VM) Start() error {
 		return err
 	}
 
-	err := v.RunMultiple(
-		"hostnamectl set-hostname "+v.cfg.Name,
-		fmt.Sprintf("ip addr add %s/24 dev ens4", v.cfg.IPv4),
-		fmt.Sprintf("ip addr add %s/24 dev ens4", v.cfg.IPv6),
-		"ip link set dev ens4 up",
-	)
-	if err != nil {
+	if _, err := v.Run("hostnamectl set-hostname " + v.cfg.Name); err != nil {
 		v.Close()
 		return err
+	}
+
+	for i, net := range v.cfg.Networks {
+		interfaceID := i + 5 // the PCI slot layout on these VMs means the NICs start at ens4.
+		err := v.RunMultiple(
+			fmt.Sprintf("ip addr add %s/24 dev enp0s%d", v.cfg.IPv4[net], interfaceID),
+			fmt.Sprintf("ip addr add %s/24 dev enp0s%d", v.cfg.IPv6[net], interfaceID),
+			fmt.Sprintf("ip link set dev enp0s%d up", interfaceID),
+		)
+		if err != nil {
+			v.Close()
+			return err
+		}
 	}
 
 	return nil
@@ -459,10 +485,10 @@ func (v *VM) ForwardedPort(dst int) int {
 }
 
 // IPv4 returns the LAN IPv4 address of the VM.
-func (v *VM) IPv4() net.IP { return v.cfg.IPv4 }
+func (v *VM) IPv4(network string) net.IP { return v.cfg.IPv4[network] }
 
 // IPv6 returns the LAN IPv6 address of the VM.
-func (v *VM) IPv6() net.IP { return v.cfg.IPv6 }
+func (v *VM) IPv6(network string) net.IP { return v.cfg.IPv6[network] }
 
 var (
 	qemuPrompt = []byte("\r\n(qemu) ")

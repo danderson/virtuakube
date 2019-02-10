@@ -15,13 +15,19 @@ type Snapshot struct {
 	Name     string
 	ID       string
 	NextPort int
-	NextIPv4 net.IP
-	NextIPv6 net.IP
+	NextNet  int
 	Clock    time.Time
 
+	Networks map[string]*Network
 	Images   map[string]*Image
 	VMs      map[string]*VM
 	Clusters map[string]*Cluster
+}
+
+type Network struct {
+	Name     string
+	NextIPv4 net.IP
+	NextIPv6 net.IP
 }
 
 type Image struct {
@@ -34,9 +40,10 @@ type VM struct {
 	DiskFile     string
 	MemoryMiB    int
 	PortForwards map[int]int
-	MAC          string
-	IPv4         net.IP
-	IPv6         net.IP
+	Networks     []string
+	MAC          map[string]string // network name -> MAC in that network
+	IPv4         map[string]net.IP // network name -> IP in that network
+	IPv6         map[string]net.IP
 }
 
 type Cluster struct {

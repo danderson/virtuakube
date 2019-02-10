@@ -37,7 +37,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
 RUN DEBIAN_FRONTEND=noninteractive apt-get -y upgrade --no-install-recommends
 RUN echo "root:root" | chpasswd
 RUN echo "PermitRootLogin yes" >>/etc/ssh/sshd_config
-RUN echo "auto ens3\niface ens3 inet dhcp" >/etc/network/interfaces
+RUN echo "auto enp0s2\niface enp0s2 inet dhcp" >/etc/network/interfaces
 RUN echo "supersede domain-name-servers 8.8.8.8;" >>/etc/dhcp/dhclient.conf
 `
 
