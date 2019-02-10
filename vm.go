@@ -478,6 +478,15 @@ func (v *VM) Hostname() string {
 	return v.cfg.Name
 }
 
+// Networks returns the networks to which the VM is connected.
+func (v *VM) Networks() []string {
+	ret := []string{}
+	for _, net := range v.cfg.Networks {
+		ret = append(ret, net)
+	}
+	return ret
+}
+
 // ForwardedPort returns the port on localhost that maps to the given
 // port on the VM.
 func (v *VM) ForwardedPort(dst int) int {

@@ -25,6 +25,7 @@ var clusterFlags = struct {
 	networkAddon string
 	registry     bool
 	addons       []string
+	networks     []string
 }{}
 
 func init() {
@@ -38,6 +39,7 @@ func init() {
 	newclusterCmd.Flags().StringSliceVar(&clusterFlags.addons, "addons", nil, "addons to install")
 	newclusterCmd.Flags().StringVar(&clusterFlags.image, "image", "", "base disk image to use")
 	newclusterCmd.Flags().IntVar(&clusterFlags.memory, "memory", 1024, "amount of memory to give the VMs in GiB")
+	newclusterCmd.Flags().StringSliceVar(&clusterFlags.networks, "networks", []string{}, "networks to attach the VM to")
 }
 
 func newcluster(u *virtuakube.Universe, verbose bool) error {
@@ -47,6 +49,7 @@ func newcluster(u *virtuakube.Universe, verbose bool) error {
 		VMConfig: &virtuakube.VMConfig{
 			Image:     clusterFlags.image,
 			MemoryMiB: clusterFlags.memory,
+			Networks:  clusterFlags.networks,
 		},
 	}
 	if verbose {
