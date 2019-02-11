@@ -229,11 +229,6 @@ func (c *Cluster) mkKubeClient() error {
 var addrRe = regexp.MustCompile("https://.*:6443")
 
 func (c *Cluster) startController() error {
-	// addons, err := assembleAddons(c.cfg.NetworkAddon)
-	// if err != nil {
-	// 	return err
-	// }
-
 	if err := c.controller.Start(); err != nil {
 		return err
 	}
@@ -262,14 +257,10 @@ apiServerCertSANs:
 	if err := c.controller.WriteFile("/tmp/k8s.conf", []byte(controllerConfig)); err != nil {
 		return err
 	}
-	// if err := c.controller.WriteFile("/tmp/addons.yaml", addons); err != nil {
-	// 	return err
-	// }
 
 	err := c.controller.RunMultiple(
 		"kubeadm init --config=/tmp/k8s.conf --ignore-preflight-errors=NumCPU",
 		"KUBECONFIG=/etc/kubernetes/admin.conf kubectl taint nodes --all node-role.kubernetes.io/master-",
-		//"KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /tmp/addons.yaml",
 	)
 	if err != nil {
 		return err
