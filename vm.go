@@ -23,8 +23,6 @@ import (
 	"go.universe.tf/virtuakube/internal/config"
 )
 
-var logCommands = true
-
 // VMConfig is the configuration for a virtual machine.
 type VMConfig struct {
 	Name         string
@@ -32,7 +30,6 @@ type VMConfig struct {
 	MemoryMiB    int
 	Networks     []string
 	PortForwards map[int]bool
-	CommandLog   io.Writer
 
 	// Only available to image builder.
 	*kernelConfig
@@ -56,6 +53,8 @@ type VM struct {
 
 	universeStartTime time.Time
 	universeOpenTime  time.Time
+
+	commandLog io.Writer
 
 	mu sync.Mutex
 
@@ -81,6 +80,7 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 		stopped:           make(chan bool),
 		universeStartTime: u.cfg.Snapshots[u.activeSnapshot].Clock,
 		universeOpenTime:  u.startTime,
+		commandLog:        u.runtimecfg.CommandLog,
 	}
 
 	ret.cmd = exec.Command(
@@ -93,13 +93,16 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 		"-object", "rng-random,filename=/dev/urandom,id=rng0",
 		"-netdev", fmt.Sprintf("user,id=net0,%s", makeForwards(cfg.PortForwards)),
 		"-drive", fmt.Sprintf("if=virtio,file=%s,media=disk", cfg.DiskFile),
-		"-nographic",
 		"-rtc", "clock=vm",
 		"-serial", "null",
 		"-monitor", "stdio",
 		"-S",
 		"-enable-kvm",
 	)
+
+	if !u.runtimecfg.VMGraphics {
+		ret.cmd.Args = append(ret.cmd.Args, "-nographic")
+	}
 
 	for i, net := range cfg.Networks {
 		ret.cmd.Args = append(ret.cmd.Args,
@@ -123,7 +126,6 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 		Setpgid: true,
 	}
 	ret.cmd.Stderr = os.Stderr
-	fmt.Println(strings.Join(ret.cmd.Args, " "))
 
 	monIn, err := ret.cmd.StdinPipe()
 	if err != nil {
@@ -351,10 +353,10 @@ func (v *VM) runWithLock(command string) ([]byte, error) {
 	var out bytes.Buffer
 	sess.Stdout = &out
 	sess.Stderr = &out
-	if logCommands {
-		sess.Stdout = io.MultiWriter(&out, os.Stdout)
+	if v.commandLog != nil {
+		sess.Stdout = io.MultiWriter(&out, v.commandLog)
 		sess.Stderr = sess.Stdout
-		fmt.Fprintln(os.Stdout, "+ "+command)
+		fmt.Fprintf(v.commandLog, "[%s] %s\n", v.cfg.Name, command)
 	}
 
 	if err := sess.Run(command); err != nil {
@@ -385,8 +387,8 @@ func (v *VM) WriteFile(path string, bs []byte) error {
 	}
 	defer sess.Close()
 	sess.Stdin = bytes.NewBuffer(bs)
-	if logCommands {
-		fmt.Fprintf(os.Stdout, "+ (write file %s)\n", path)
+	if v.commandLog != nil {
+		fmt.Fprintf(v.commandLog, "[%s] (write file %s)\n", v.cfg.Name, path)
 	}
 
 	return sess.Run("cat >" + path)
@@ -402,8 +404,8 @@ func (v *VM) ReadFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer sess.Close()
-	if logCommands {
-		fmt.Fprintf(os.Stdout, "+ (read file %s)\n", path)
+	if v.commandLog != nil {
+		fmt.Fprintf(v.commandLog, "[%s] (read file %s)\n", v.cfg.Name, path)
 	}
 	return sess.Output("cat " + path)
 }

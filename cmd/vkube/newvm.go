@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"go.universe.tf/virtuakube"
@@ -35,15 +34,12 @@ func init() {
 	newvmCmd.Flags().StringSliceVar(&vmFlags.networks, "networks", []string{}, "networks to attach the VM to")
 }
 
-func newvm(u *virtuakube.Universe, verbose bool) error {
+func newvm(u *virtuakube.Universe) error {
 	cfg := &virtuakube.VMConfig{
 		Name:      vmFlags.name,
 		Image:     vmFlags.image,
 		MemoryMiB: vmFlags.memory,
 		Networks:  vmFlags.networks,
-	}
-	if verbose {
-		cfg.CommandLog = os.Stdout
 	}
 
 	fmt.Printf("Creating VM %q...\n", vmFlags.name)

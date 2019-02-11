@@ -25,7 +25,7 @@ func init() {
 	newnetworkCmd.Flags().StringVar(&networkFlags.name, "name", "", "name for the VM")
 }
 
-func newnetwork(u *virtuakube.Universe, verbose bool) error {
+func newnetwork(u *virtuakube.Universe) error {
 	cfg := &virtuakube.NetworkConfig{
 		Name: networkFlags.name,
 	}

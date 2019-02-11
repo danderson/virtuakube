@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"go.universe.tf/virtuakube"
@@ -34,7 +33,7 @@ func init() {
 	newimageCmd.Flags().BoolVar(&imageFlags.prepull, "prepull-k8s", true, "pre-pull docker images required to run Kubernetes")
 }
 
-func newimage(u *virtuakube.Universe, verbose bool) error {
+func newimage(u *virtuakube.Universe) error {
 	if imageFlags.prepull && !imageFlags.k8s {
 		return errors.New("Cannot prepull k8s images if I'm not installing k8s")
 	}
@@ -50,9 +49,6 @@ func newimage(u *virtuakube.Universe, verbose bool) error {
 	}
 	if imageFlags.script != "" {
 		cfg.CustomizeFuncs = append(cfg.CustomizeFuncs, virtuakube.CustomizeScript(imageFlags.script))
-	}
-	if verbose {
-		cfg.BuildLog = os.Stdout
 	}
 
 	fmt.Printf("Creating VM base image %q...\n", imageFlags.name)

@@ -7,7 +7,7 @@ import (
 
 var resumeCmd = &cobra.Command{
 	Use:   "resume",
-	Short: "Create a standalone VM",
+	Short: "Resume the universe with no other changes",
 	Args:  cobra.NoArgs,
 	Run:   withUniverse(&resumeFlags, resume),
 }
@@ -19,6 +19,6 @@ func init() {
 	addUniverseFlags(resumeCmd, &resumeFlags, true, false)
 }
 
-func resume(u *virtuakube.Universe, verbose bool) error {
+func resume(u *virtuakube.Universe) error {
 	return nil
 }

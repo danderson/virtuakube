@@ -60,7 +60,6 @@ type ImageCustomizeFunc func(*VM) error
 type ImageConfig struct {
 	Name           string
 	CustomizeFuncs []ImageCustomizeFunc
-	BuildLog       io.Writer
 	NoKVM          bool
 }
 
@@ -113,8 +112,8 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 
 	iidPath := filepath.Join(tmp, "iid")
 	cmd := exec.Command("docker", "build", "--iidfile", iidPath, tmp)
-	cmd.Stdout = cfg.BuildLog
-	cmd.Stderr = cfg.BuildLog
+	cmd.Stdout = u.runtimecfg.CommandLog
+	cmd.Stderr = u.runtimecfg.CommandLog
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("running docker build: %v", err)
 	}
@@ -132,8 +131,8 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 		string(iid),
 		"cp", "/vmlinuz", "/initrd.img", "/tmp/ctx",
 	)
-	cmd.Stdout = cfg.BuildLog
-	cmd.Stderr = cfg.BuildLog
+	cmd.Stdout = u.runtimecfg.CommandLog
+	cmd.Stderr = u.runtimecfg.CommandLog
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("extracting kernel from container: %v", err)
 	}
@@ -149,8 +148,8 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 		"-o", tarPath,
 		string(cid),
 	)
-	cmd.Stdout = cfg.BuildLog
-	cmd.Stderr = cfg.BuildLog
+	cmd.Stdout = u.runtimecfg.CommandLog
+	cmd.Stderr = u.runtimecfg.CommandLog
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("exporting image tarball: %v", err)
 	}
@@ -162,8 +161,8 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 		"--type=ext4", "--size=10G",
 		tarPath, imgPath,
 	)
-	cmd.Stdout = cfg.BuildLog
-	cmd.Stderr = cfg.BuildLog
+	cmd.Stdout = u.runtimecfg.CommandLog
+	cmd.Stderr = u.runtimecfg.CommandLog
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("creating image file: %v", err)
 	}
@@ -172,7 +171,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	tmpu, err := Create(filepath.Join(tmp, "u"))
+	tmpu, err := Create(filepath.Join(tmp, "u"), nil)
 	if err != nil {
 		return fmt.Errorf("creating virtuakube instance: %v", err)
 	}
@@ -183,9 +182,8 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 	}
 
 	v, err := tmpu.NewVM(&VMConfig{
-		Image:      "build",
-		MemoryMiB:  2048,
-		CommandLog: cfg.BuildLog,
+		Image:     "build",
+		MemoryMiB: 2048,
 		kernelConfig: &kernelConfig{
 			kernelPath: filepath.Join(tmp, "vmlinuz"),
 			initrdPath: filepath.Join(tmp, "initrd.img"),
@@ -245,8 +243,8 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 		filepath.Join(tmp, "u", tmpu.image("build")),
 		filepath.Join(u.dir, ret),
 	)
-	cmd.Stdout = cfg.BuildLog
-	cmd.Stderr = cfg.BuildLog
+	cmd.Stdout = u.runtimecfg.CommandLog
+	cmd.Stderr = u.runtimecfg.CommandLog
 	if err := cmd.Run(); err != nil {
 		os.Remove(ret)
 		return fmt.Errorf("running qemu-img convert: %v", err)

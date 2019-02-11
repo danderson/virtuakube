@@ -13,25 +13,27 @@ import (
 )
 
 type universeFlags struct {
-	dir      string
-	snapshot string
-	verbose  bool
-	wait     bool
-	save     bool
-	saveName string
+	dir        string
+	snapshot   string
+	verbose    bool
+	vmgraphics bool
+	wait       bool
+	save       bool
+	saveName   string
 }
 
 func addUniverseFlags(cmd *cobra.Command, flags *universeFlags, wait, save bool) {
 	cmd.Flags().StringVarP(&flags.dir, "universe", "u", "", "directory containing the universe")
 	cmd.Flags().StringVarP(&flags.snapshot, "snapshot", "s", "", "snapshot to resume in the universe")
 	cmd.Flags().BoolVarP(&flags.verbose, "verbose", "v", false, "show commands being executed under the hood")
+	cmd.Flags().BoolVar(&flags.vmgraphics, "graphics", false, "show a GUI for each running VM")
 	cmd.Flags().BoolVarP(&flags.wait, "wait", "w", wait, "wait for ctrl+C before exiting")
 	cmd.Flags().BoolVar(&flags.save, "save", save, "save the universe on exit")
 	cmd.Flags().StringVar(&flags.saveName, "save-snapshot", "", "snapshot to save to, if different from --snapshot")
 	cmd.MarkFlagRequired("universe")
 }
 
-type universeFunc func(*virtuakube.Universe, bool) error
+type universeFunc func(*virtuakube.Universe) error
 
 func withUniverse(flags *universeFlags, do universeFunc) func(*cobra.Command, []string) {
 	return func(_ *cobra.Command, _ []string) {
@@ -60,13 +62,13 @@ func runDoWithUniverse(flags *universeFlags, do universeFunc) error {
 
 	start := time.Now()
 
-	u, err := openOrCreateUniverse(flags.dir, flags.snapshot)
+	u, err := openOrCreateUniverse(flags.dir, flags.snapshot, flags.verbose, flags.vmgraphics)
 	if err != nil {
 		return fmt.Errorf("Getting universe: %v", err)
 	}
 	defer u.Close()
 
-	if err := do(u, flags.verbose); err != nil {
+	if err := do(u); err != nil {
 		return err
 	}
 
@@ -115,7 +117,7 @@ func runDoWithUniverse(flags *universeFlags, do universeFunc) error {
 
 // openOrCreateUniverse sets up a universe, either by creating it from
 // scratch, or by opening an existing one.
-func openOrCreateUniverse(dir, snapshot string) (*virtuakube.Universe, error) {
+func openOrCreateUniverse(dir, snapshot string, verbose, vmgraphics bool) (*virtuakube.Universe, error) {
 	if dir == "" {
 		return nil, errors.New("universe directory not specified")
 	}
@@ -125,13 +127,20 @@ func openOrCreateUniverse(dir, snapshot string) (*virtuakube.Universe, error) {
 		err      error
 	)
 
+	cfg := &virtuakube.UniverseConfig{
+		VMGraphics: vmgraphics,
+	}
+	if verbose {
+		cfg.CommandLog = os.Stdout
+	}
+
 	_, err = os.Stat(dir)
 	if os.IsNotExist(err) {
-		universe, err = virtuakube.Create(dir)
+		universe, err = virtuakube.Create(dir, cfg)
 	} else if err != nil {
 		return nil, err
 	} else {
-		universe, err = virtuakube.Open(dir, snapshot)
+		universe, err = virtuakube.Open(dir, snapshot, cfg)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("getting universe: %v", err)

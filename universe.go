@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -43,6 +44,18 @@ func checkTools(tools []string) error {
 	return nil
 }
 
+// UniverseConfig contains the ephemeral runtime settings for the
+// universe. A nil UniverseConfig is equivalent to the zero value.
+type UniverseConfig struct {
+	// If non-nil, all commands executed on VMs and during image
+	// building are logged to this writer, along with their
+	// stdout/stderr.
+	CommandLog io.Writer
+	// Whether VMs should have a GUI. Useful for debugging Virtuakube
+	// itself.
+	VMGraphics bool
+}
+
 // A Universe is a virtual sandbox and its associated resources.
 type Universe struct {
 	// Root containing all the stuff in the universe.
@@ -53,6 +66,10 @@ type Universe struct {
 	// Channel that gets closed right at the end of Close, Destroy, or
 	// Save. Wait waits for this channel to get closed.
 	closedCh chan bool
+
+	// Runtime configuration for this particular run of the
+	// universe. Not persisted after Close.
+	runtimecfg *UniverseConfig
 
 	// Must hold this mutex to touch any of the following.
 	mu sync.Mutex
@@ -90,7 +107,7 @@ type Universe struct {
 
 // Create creates a new empty Universe in dir. The directory must not
 // already exist.
-func Create(dir string) (*Universe, error) {
+func Create(dir string, runtimecfg *UniverseConfig) (*Universe, error) {
 	cfg := &config.Universe{
 		Snapshots: map[string]*config.Snapshot{
 			"": {
@@ -117,11 +134,11 @@ func Create(dir string) (*Universe, error) {
 		return nil, err
 	}
 
-	return Open(dir, "")
+	return Open(dir, "", runtimecfg)
 }
 
 // Open opens the existing Universe in dir, and resumes from snapshot.
-func Open(dir string, snapshot string) (*Universe, error) {
+func Open(dir string, snapshot string, runtimecfg *UniverseConfig) (*Universe, error) {
 	if err := checkTools(universeTools); err != nil {
 		return nil, err
 	}
@@ -129,6 +146,10 @@ func Open(dir string, snapshot string) (*Universe, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
+	}
+
+	if runtimecfg == nil {
+		runtimecfg = &UniverseConfig{}
 	}
 
 	cfgPath := filepath.Join(dir, "config.json")
@@ -152,6 +173,7 @@ func Open(dir string, snapshot string) (*Universe, error) {
 		tmpdir:         tmpdir,
 		closedCh:       make(chan bool),
 		cfg:            cfg,
+		runtimecfg:     runtimecfg,
 		nextPort:       snap.NextPort,
 		nextNet:        snap.NextNet,
 		activeSnapshot: snapshot,

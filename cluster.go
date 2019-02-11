@@ -109,7 +109,6 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 			30000: true,
 			6443:  true,
 		},
-		CommandLog: cfg.VMConfig.CommandLog,
 	}
 	for fwd := range cfg.VMConfig.PortForwards {
 		controllerCfg.PortForwards[fwd] = true
@@ -127,7 +126,6 @@ func (u *Universe) NewCluster(cfg *ClusterConfig) (*Cluster, error) {
 			MemoryMiB:    cfg.VMConfig.MemoryMiB,
 			Networks:     cfg.VMConfig.Networks,
 			PortForwards: cfg.VMConfig.PortForwards,
-			CommandLog:   cfg.VMConfig.CommandLog,
 		}
 		node, err := u.newVMWithLock(nodeCfg)
 		if err != nil {

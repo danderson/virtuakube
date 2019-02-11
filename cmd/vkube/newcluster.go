@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -42,7 +41,7 @@ func init() {
 	newclusterCmd.Flags().StringSliceVar(&clusterFlags.networks, "networks", []string{}, "networks to attach the VM to")
 }
 
-func newcluster(u *virtuakube.Universe, verbose bool) error {
+func newcluster(u *virtuakube.Universe) error {
 	cfg := &virtuakube.ClusterConfig{
 		Name:     clusterFlags.name,
 		NumNodes: clusterFlags.nodes,
@@ -51,9 +50,6 @@ func newcluster(u *virtuakube.Universe, verbose bool) error {
 			MemoryMiB: clusterFlags.memory,
 			Networks:  clusterFlags.networks,
 		},
-	}
-	if verbose {
-		cfg.VMConfig.CommandLog = os.Stdout
 	}
 
 	fmt.Printf("Creating cluster %q...\n", clusterFlags.name)
