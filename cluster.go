@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -23,8 +22,12 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"go.universe.tf/virtuakube/internal/assets"
 	"go.universe.tf/virtuakube/internal/config"
+)
+
+const (
+	podNetwork  = "10.32.0.0/12"
+	serviceCIDR = "10.96.0.0/12"
 )
 
 // ClusterConfig is the configuration for a virtual Kubernetes
@@ -348,29 +351,11 @@ func getDeploymentsAndDaemonsets(manifestBytes []byte) (deployments []metav1.Obj
 	return deployments, daemons, nil
 }
 
-func (c *Cluster) ApplyManifest(name string) error {
-	return c.applyManifest(name, "")
-}
-
-func (c *Cluster) applyManifest(name, assetDir string) error {
+func (c *Cluster) ApplyManifest(bs []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.started {
 		return errors.New("cluster not started yet")
-	}
-
-	// Figure out if the addon is builtin or external, and get the bytes.
-	var (
-		bs  []byte
-		err error
-	)
-	if !strings.ContainsAny(name, "./") {
-		bs, err = assets.Asset(filepath.Join(assetDir, name+".yaml"))
-	} else {
-		bs, err = ioutil.ReadFile(name)
-	}
-	if err != nil {
-		return err
 	}
 
 	deployNames, daemonNames, err := getDeploymentsAndDaemonsets(bs)
@@ -411,35 +396,6 @@ func (c *Cluster) applyManifest(name, assetDir string) error {
 
 		return true, nil
 	})
-}
-
-func (c *Cluster) InstallNetworkAddon(name string) error {
-	if err := c.applyManifest(name, "net"); err != nil {
-		return err
-	}
-
-	client := c.KubernetesClient()
-	return c.WaitFor(context.Background(), func() (bool, error) {
-		nodes, err := client.CoreV1().Nodes().List(metav1.ListOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		if len(nodes.Items) != c.cfg.NumNodes+1 {
-			return false, nil
-		}
-		for _, node := range nodes.Items {
-			if !nodeReady(node) {
-				return false, nil
-			}
-		}
-
-		return true, nil
-	})
-}
-
-func (c *Cluster) InstallRegistry() error {
-	return c.applyManifest("registry", "")
 }
 
 // KubernetesClient returns a kubernetes client connected to the
@@ -486,37 +442,24 @@ func (c *Cluster) Nodes() []*VM {
 	return c.nodes
 }
 
-// Registry returns the port on localhost for the in-cluster
-// registry. Within the cluster, the registry is reachable at
-// localhost:30000 on all nodes.
-func (c *Cluster) Registry() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.controller.ForwardedPort(30000)
-}
+// NodesReady returns true if all nodes in the cluster are in the
+// Ready state.
+func (c *Cluster) NodesReady() (bool, error) {
+	nodes, err := c.KubernetesClient().CoreV1().Nodes().List(metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
 
-func networkAddonBytes(addon string) ([]byte, error) {
-	if !strings.ContainsAny(addon, "./") {
-		bs, err := assets.Asset("net/" + addon + ".yaml")
-		if err == nil {
-			return bs, nil
+	if len(nodes.Items) != c.cfg.NumNodes+1 {
+		return false, nil
+	}
+	for _, node := range nodes.Items {
+		if !nodeReady(node) {
+			return false, nil
 		}
 	}
 
-	return ioutil.ReadFile(addon)
-}
-
-func assembleAddons(networkAddon string) ([]byte, error) {
-	var out [][]byte
-
-	bs, err := networkAddonBytes(networkAddon)
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, bs)
-	out = append(out, assets.MustAsset("registry.yaml"))
-
-	return bytes.Join(out, []byte("\n---\n")), nil
+	return true, nil
 }
 
 func nodeReady(node corev1.Node) bool {
