@@ -171,7 +171,7 @@ func (u *Universe) NewImage(cfg *ImageConfig) error {
 		return fmt.Errorf("removing image tarball: %v", err)
 	}
 
-	tmpu, err := Create(filepath.Join(tmp, "u"), nil)
+	tmpu, err := Create(filepath.Join(tmp, "u"), u.runtimecfg)
 	if err != nil {
 		return fmt.Errorf("creating virtuakube instance: %v", err)
 	}
