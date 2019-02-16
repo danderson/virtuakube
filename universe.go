@@ -423,6 +423,15 @@ func (u *Universe) image(name string) string {
 	return u.images[name]
 }
 
+func (u *Universe) Command(command string, args ...string) *exec.Cmd {
+	cmd := exec.Command(command, args...)
+	if u.runtimecfg.CommandLog != nil {
+		cmd.Stdout = u.runtimecfg.CommandLog
+		cmd.Stderr = u.runtimecfg.CommandLog
+	}
+	return cmd
+}
+
 // VM returns the VM with the given name, or nil if no such VM
 // exists in the universe.
 func (u *Universe) VM(name string) *VM {
