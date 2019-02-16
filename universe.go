@@ -54,6 +54,8 @@ type UniverseConfig struct {
 	// Whether VMs should have a GUI. Useful for debugging Virtuakube
 	// itself.
 	VMGraphics bool
+	// Make subprocesses immune to ^C, to enable interactive control.
+	Interactive bool
 }
 
 // A Universe is a virtual sandbox and its associated resources.

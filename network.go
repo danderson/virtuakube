@@ -59,8 +59,10 @@ func (u *Universe) mkNetwork(cfg *config.Network) error {
 		sock:    sock,
 		cmd:     exec.Command("vde_switch", "--sock", sock, "-m", "0600"),
 	}
-	ret.cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
+	if u.runtimecfg.Interactive {
+		ret.cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true,
+		}
 	}
 
 	if err := ret.cmd.Start(); err != nil {

@@ -122,8 +122,10 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 		ret.cmd.Args = append(ret.cmd.Args, "-loadvm", u.cfg.Snapshots[u.activeSnapshot].ID)
 	}
 	ret.cmd.Dir = u.dir
-	ret.cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
+	if u.runtimecfg.Interactive {
+		ret.cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true,
+		}
 	}
 	ret.cmd.Stderr = os.Stderr
 
