@@ -318,10 +318,10 @@ func (v *VM) boot() error {
 		break
 	}
 
-	if _, err := v.runWithLock("timedatectl set-ntp false"); err != nil {
+	if _, err := v.runWithLock("timedatectl set-ntp false", nil); err != nil {
 		return err
 	}
-	if _, err := v.runWithLock(fmt.Sprintf("timedatectl set-time %q", v.universeStartTime.Add(time.Since(v.universeOpenTime)).Format("2006-01-02 15:04:05"))); err != nil {
+	if _, err := v.runWithLock(fmt.Sprintf("timedatectl set-time %q", v.universeStartTime.Add(time.Since(v.universeOpenTime)).Format("2006-01-02 15:04:05")), nil); err != nil {
 		return err
 	}
 
@@ -343,16 +343,23 @@ func (v *VM) Wait(ctx context.Context) error {
 func (v *VM) Run(command string) ([]byte, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return v.runWithLock(command)
+	return v.runWithLock(command, nil)
 }
 
-func (v *VM) runWithLock(command string) ([]byte, error) {
+func (v *VM) RunWithInput(command string, stdin io.Reader) ([]byte, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.runWithLock(command, stdin)
+}
+
+func (v *VM) runWithLock(command string, stdin io.Reader) ([]byte, error) {
 	sess, err := v.ssh.NewSession()
 	if err != nil {
 		return nil, err
 	}
 	defer sess.Close()
 	var out bytes.Buffer
+	sess.Stdin = stdin
 	sess.Stdout = &out
 	sess.Stderr = &out
 	if v.commandLog != nil {

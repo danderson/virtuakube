@@ -9,9 +9,12 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -426,6 +429,36 @@ func (c *Cluster) WaitFor(ctx context.Context, test func() (bool, error)) error 
 
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// PushImage extracts the named image from the host's docker daemon,
+// and pushes it to the docker daemon on all nodes in the cluster.
+func (c *Cluster) PushImage(image string) error {
+	for _, node := range append(c.Nodes(), c.Controller()) {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return err
+		}
+		defer pr.Close()
+		defer pw.Close()
+
+		pusher := exec.Command("docker", "save", image)
+		pusher.Stdout = pw
+		pusher.Stderr = os.Stderr
+		if err := pusher.Start(); err != nil {
+			return fmt.Errorf("running %q: %v", strings.Join(pusher.Args, " "), err)
+		}
+		go func() {
+			pusher.Wait()
+			pw.Close()
+		}()
+
+		if _, err := node.RunWithInput("docker load", pr); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Controller returns the VM for the cluster controller node.

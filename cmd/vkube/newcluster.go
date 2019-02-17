@@ -17,13 +17,14 @@ var newclusterCmd = &cobra.Command{
 }
 
 var clusterFlags = struct {
-	universe universeFlags
-	name     string
-	nodes    int
-	image    string
-	memory   int
-	addons   []string
-	networks []string
+	universe   universeFlags
+	name       string
+	nodes      int
+	image      string
+	memory     int
+	addons     []string
+	networks   []string
+	pushimages []string
 }{}
 
 func init() {
@@ -36,6 +37,7 @@ func init() {
 	newclusterCmd.Flags().StringVar(&clusterFlags.image, "image", "", "base disk image to use")
 	newclusterCmd.Flags().IntVar(&clusterFlags.memory, "memory", 1024, "amount of memory to give the VMs in GiB")
 	newclusterCmd.Flags().StringSliceVar(&clusterFlags.networks, "networks", []string{}, "networks to attach the VM to")
+	newclusterCmd.Flags().StringSliceVar(&clusterFlags.pushimages, "pushimages", []string{}, "docker images to push to cluster nodes")
 }
 
 func newcluster(u *virtuakube.Universe) error {
@@ -69,6 +71,15 @@ func newcluster(u *virtuakube.Universe) error {
 
 			if err := cluster.ApplyManifest(bs); err != nil {
 				return fmt.Errorf("installing addon %q: %v", addon, err)
+			}
+		}
+	}
+
+	if len(clusterFlags.pushimages) != 0 {
+		fmt.Printf("Pushing docker images %s...\n", strings.Join(clusterFlags.addons, ", "))
+		for _, image := range clusterFlags.pushimages {
+			if err := cluster.PushImage(image); err != nil {
+				return fmt.Errorf("pushing image %q: %v", image, err)
 			}
 		}
 	}
