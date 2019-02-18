@@ -439,7 +439,7 @@ func (c *Cluster) PushImages(images ...string) error {
 
 	for _, image := range images {
 		for _, node := range nodes {
-			go func(node *VM) {
+			go func(node *VM, image string) {
 				pr, pw, err := os.Pipe()
 				if err != nil {
 					errs <- err
@@ -466,7 +466,7 @@ func (c *Cluster) PushImages(images ...string) error {
 				}
 
 				errs <- nil
-			}(node)
+			}(node, image)
 		}
 	}
 
