@@ -86,6 +86,7 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 	ret.cmd = exec.Command(
 		"qemu-system-x86_64",
 		"-machine", "q35",
+		"-smp", "cores=6,threads=2,sockets=1",
 		"-m", strconv.Itoa(cfg.MemoryMiB),
 		"-device", "virtio-net,netdev=net0,mac=52:54:00:12:34:56",
 		"-device", "virtio-rng-pci,rng=rng0",
