@@ -76,11 +76,9 @@ func newcluster(u *virtuakube.Universe) error {
 	}
 
 	if len(clusterFlags.pushimages) != 0 {
-		fmt.Printf("Pushing docker images %s...\n", strings.Join(clusterFlags.addons, ", "))
-		for _, image := range clusterFlags.pushimages {
-			if err := cluster.PushImage(image); err != nil {
-				return fmt.Errorf("pushing image %q: %v", image, err)
-			}
+		fmt.Printf("Pushing docker images %s...\n", strings.Join(clusterFlags.pushimages, ", "))
+		if err := cluster.PushImages(clusterFlags.pushimages...); err != nil {
+			return fmt.Errorf("pushing images: %v", err)
 		}
 	}
 

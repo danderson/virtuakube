@@ -318,10 +318,18 @@ func (v *VM) boot() error {
 		break
 	}
 
-	if _, err := v.runWithLock("timedatectl set-ntp false", nil); err != nil {
+	sess, err := v.ssh.NewSession()
+	if err != nil {
 		return err
 	}
-	if _, err := v.runWithLock(fmt.Sprintf("timedatectl set-time %q", v.universeStartTime.Add(time.Since(v.universeOpenTime)).Format("2006-01-02 15:04:05")), nil); err != nil {
+	if _, err := v.runWithSession(sess, "timedatectl set-ntp false", nil); err != nil {
+		return err
+	}
+	sess, err = v.ssh.NewSession()
+	if err != nil {
+		return err
+	}
+	if _, err := v.runWithSession(sess, fmt.Sprintf("timedatectl set-time %q", v.universeStartTime.Add(time.Since(v.universeOpenTime)).Format("2006-01-02 15:04:05")), nil); err != nil {
 		return err
 	}
 
@@ -342,21 +350,27 @@ func (v *VM) Wait(ctx context.Context) error {
 // output.
 func (v *VM) Run(command string) ([]byte, error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.runWithLock(command, nil)
+	sess, err := v.ssh.NewSession()
+	v.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	v.mu.Unlock()
+	return v.runWithSession(sess, command, nil)
 }
 
 func (v *VM) RunWithInput(command string, stdin io.Reader) ([]byte, error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.runWithLock(command, stdin)
-}
-
-func (v *VM) runWithLock(command string, stdin io.Reader) ([]byte, error) {
 	sess, err := v.ssh.NewSession()
+	v.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
+	return v.runWithSession(sess, command, stdin)
+}
+
+// does not hold v.mu, you can't access any protected members!
+func (v *VM) runWithSession(sess *ssh.Session, command string, stdin io.Reader) ([]byte, error) {
 	defer sess.Close()
 	var out bytes.Buffer
 	sess.Stdin = stdin
