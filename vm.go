@@ -355,7 +355,6 @@ func (v *VM) Run(command string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	v.mu.Unlock()
 	return v.runWithSession(sess, command, nil)
 }
 
