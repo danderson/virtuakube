@@ -431,41 +431,43 @@ func (c *Cluster) WaitFor(ctx context.Context, test func() (bool, error)) error 
 	}
 }
 
-// PushImage extracts the named image from the host's docker daemon,
-// and pushes it to the docker daemon on all nodes in the cluster.
-func (c *Cluster) PushImage(image string) error {
+// PushImages extracts the named images from the host's docker daemon,
+// and pushes them to the docker daemons on all nodes in the cluster.
+func (c *Cluster) PushImages(images ...string) error {
 	nodes := append(c.Nodes(), c.Controller())
-	errs := make(chan error, len(nodes))
+	errs := make(chan error, len(nodes)*len(images))
 
-	for _, node := range append(c.Nodes(), c.Controller()) {
-		go func(node *VM) {
-			pr, pw, err := os.Pipe()
-			if err != nil {
-				errs <- err
-				return
-			}
-			defer pr.Close()
-			defer pw.Close()
+	for _, image := range images {
+		for _, node := range nodes {
+			go func(node *VM) {
+				pr, pw, err := os.Pipe()
+				if err != nil {
+					errs <- err
+					return
+				}
+				defer pr.Close()
+				defer pw.Close()
 
-			pusher := exec.Command("docker", "save", image)
-			pusher.Stdout = pw
-			pusher.Stderr = os.Stderr
-			if err := pusher.Start(); err != nil {
-				errs <- fmt.Errorf("running %q: %v", strings.Join(pusher.Args, " "), err)
-				return
-			}
-			go func() {
-				pusher.Wait()
-				pw.Close()
-			}()
+				pusher := exec.Command("docker", "save", image)
+				pusher.Stdout = pw
+				pusher.Stderr = os.Stderr
+				if err := pusher.Start(); err != nil {
+					errs <- fmt.Errorf("running %q: %v", strings.Join(pusher.Args, " "), err)
+					return
+				}
+				go func() {
+					pusher.Wait()
+					pw.Close()
+				}()
 
-			if _, err := node.RunWithInput("docker load", pr); err != nil {
-				errs <- err
-				return
-			}
+				if _, err := node.RunWithInput("docker load", pr); err != nil {
+					errs <- err
+					return
+				}
 
-			errs <- nil
-		}(node)
+				errs <- nil
+			}(node)
+		}
 	}
 
 	var retErr error
