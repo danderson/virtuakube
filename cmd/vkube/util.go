@@ -13,13 +13,14 @@ import (
 )
 
 type universeFlags struct {
-	dir        string
-	snapshot   string
-	verbose    bool
-	vmgraphics bool
-	wait       bool
-	save       bool
-	saveName   string
+	dir          string
+	snapshot     string
+	verbose      bool
+	vmgraphics   bool
+	acceleration bool
+	wait         bool
+	save         bool
+	saveName     string
 }
 
 func addUniverseFlags(cmd *cobra.Command, flags *universeFlags, wait, save bool) {
@@ -27,6 +28,7 @@ func addUniverseFlags(cmd *cobra.Command, flags *universeFlags, wait, save bool)
 	cmd.Flags().StringVarP(&flags.snapshot, "snapshot", "s", "", "snapshot to resume in the universe")
 	cmd.Flags().BoolVarP(&flags.verbose, "verbose", "v", false, "show commands being executed under the hood")
 	cmd.Flags().BoolVar(&flags.vmgraphics, "graphics", false, "show a GUI for each running VM")
+	cmd.Flags().BoolVar(&flags.acceleration, "acceleration", true, "use KVM to accelerate VMs")
 	cmd.Flags().BoolVarP(&flags.wait, "wait", "w", wait, "wait for ctrl+C before exiting")
 	cmd.Flags().BoolVar(&flags.save, "save", save, "save the universe on exit")
 	cmd.Flags().StringVar(&flags.saveName, "save-snapshot", "", "snapshot to save to, if different from --snapshot")
@@ -128,8 +130,9 @@ func openOrCreateUniverse(dir, snapshot string, verbose, vmgraphics, interactive
 	)
 
 	cfg := &virtuakube.UniverseConfig{
-		VMGraphics:  vmgraphics,
-		Interactive: interactive,
+		VMGraphics:     vmgraphics,
+		Interactive:    interactive,
+		NoAcceleration: !universeFlags.acceleration,
 	}
 	if verbose {
 		cfg.CommandLog = os.Stdout

@@ -104,6 +104,10 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 		ret.cmd.Args = append(ret.cmd.Args, "-nographic")
 	}
 
+	if !u.runtimecfg.NoAcceleration {
+		ret.cmd.Args = append(ret.cmd.Args, "-enable-kvm")
+	}
+
 	for i, net := range cfg.Networks {
 		ret.cmd.Args = append(ret.cmd.Args,
 			"-device", fmt.Sprintf("virtio-net,netdev=net%d,addr=%d,mac=%s", i+1, i+5, cfg.MAC[net]),
@@ -435,9 +439,10 @@ func (v *VM) ReadFile(path string) ([]byte, error) {
 // Dial connects to the given destination, through the VM.
 func (v *VM) Dial(network, addr string) (net.Conn, error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
+	sshCopy := v.ssh
+	v.mu.Unlock()
 
-	return v.ssh.Dial(network, addr)
+	return sshCopy.Dial(network, addr)
 }
 
 // Close shuts down the VM, reverting all changes since the universe
