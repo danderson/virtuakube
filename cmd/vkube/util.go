@@ -64,7 +64,7 @@ func runDoWithUniverse(flags *universeFlags, do universeFunc) error {
 
 	start := time.Now()
 
-	u, err := openOrCreateUniverse(flags.dir, flags.snapshot, flags.verbose, flags.vmgraphics, flags.wait)
+	u, err := openOrCreateUniverse(flags.dir, flags.snapshot, flags.verbose, flags.vmgraphics, flags.wait, flags.acceleration)
 	if err != nil {
 		return fmt.Errorf("Getting universe: %v", err)
 	}
@@ -119,7 +119,7 @@ func runDoWithUniverse(flags *universeFlags, do universeFunc) error {
 
 // openOrCreateUniverse sets up a universe, either by creating it from
 // scratch, or by opening an existing one.
-func openOrCreateUniverse(dir, snapshot string, verbose, vmgraphics, interactive bool) (*virtuakube.Universe, error) {
+func openOrCreateUniverse(dir, snapshot string, verbose, vmgraphics, interactive, acceleration bool) (*virtuakube.Universe, error) {
 	if dir == "" {
 		return nil, errors.New("universe directory not specified")
 	}
@@ -132,7 +132,7 @@ func openOrCreateUniverse(dir, snapshot string, verbose, vmgraphics, interactive
 	cfg := &virtuakube.UniverseConfig{
 		VMGraphics:     vmgraphics,
 		Interactive:    interactive,
-		NoAcceleration: !universeFlags.acceleration,
+		NoAcceleration: !acceleration,
 	}
 	if verbose {
 		cfg.CommandLog = os.Stdout
