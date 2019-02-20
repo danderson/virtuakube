@@ -97,7 +97,6 @@ func (u *Universe) mkVM(cfg *config.VM, kernel *kernelConfig, resume bool) (*VM,
 		"-serial", "null",
 		"-monitor", "stdio",
 		"-S",
-		"-enable-kvm",
 	)
 
 	if !u.runtimecfg.VMGraphics {
