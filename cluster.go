@@ -292,12 +292,13 @@ func (c *Cluster) startNode(node *VM) error {
 		Port: 6443,
 	}
 	nodeConfig := fmt.Sprintf(`
-apiVersion: kubeadm.k8s.io/v1alpha3
+apiVersion: kubeadm.k8s.io/v1beta1
 kind: JoinConfiguration
-token: "000000.0000000000000000"
-discoveryTokenUnsafeSkipCAVerification: true
-discoveryTokenAPIServers:
-- %s
+discovery:
+  bootstrapToken:
+    token: "000000.0000000000000000"
+    unsafeSkipCAVerification: true
+    apiServerEndpoint: %s
 nodeRegistration:
   kubeletExtraArgs:
     node-ip: %s
