@@ -265,11 +265,7 @@ apiServer:
 		return err
 	}
 
-	err := c.controller.RunMultiple(
-		"kubeadm init --config=/tmp/k8s.conf --ignore-preflight-errors=NumCPU",
-		"KUBECONFIG=/etc/kubernetes/admin.conf kubectl taint nodes --all node-role.kubernetes.io/master-",
-	)
-	if err != nil {
+	if _, err := c.controller.Run("kubeadm init --config=/tmp/k8s.conf --ignore-preflight-errors=NumCPU"); err != nil {
 		return err
 	}
 
