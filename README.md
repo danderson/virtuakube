@@ -1,5 +1,7 @@
 # Virtuakube
 
+**This project is no longer being developed. I'm leaving it online for historical interest, but you should not expect it to work, and definitely not expect support, fixes, or features.**
+
 Virtuakube sets up virtual Kubernetes clusters for testing.
 
 ![Project maturity: alpha](https://img.shields.io/badge/maturity-alpha-red.svg) [![license](https://img.shields.io/github/license/google/metallb.svg?maxAge=2592000)](https://github.com/danderson/virtuakube/blob/master/LICENSE) [![GoDoc](https://godoc.org/go.universe.tf/virtuakube?status.svg)](https://godoc.org/go.universe.tf/virtuakube)
